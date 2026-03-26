@@ -1,20 +1,51 @@
 package inspector
 
+import "sync"
+
+// Result is the outcome of inspecting a prompt.
+type Result struct {
+	Matches []Match
+	Blocked bool
+}
+
 // Engine runs all active rules against text and returns matches.
 type Engine struct {
+	mu    sync.RWMutex
 	rules []Rule
 }
 
 func New() *Engine {
-	return &Engine{rules: BuiltinRules}
+	rules := make([]Rule, len(BuiltinRules))
+	copy(rules, BuiltinRules)
+	return &Engine{rules: rules}
 }
 
 func (e *Engine) Rules() []Rule {
-	return e.rules
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]Rule, len(e.rules))
+	copy(out, e.rules)
+	return out
 }
 
-func (e *Engine) Inspect(text string) []Match {
-	var matches []Match
+// SetMode updates the mode of a rule by ID. Returns false if rule not found.
+func (e *Engine) SetMode(ruleID string, mode Mode) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i, r := range e.rules {
+		if r.ID == ruleID {
+			e.rules[i].Mode = mode
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) Inspect(text string) Result {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	var result Result
 	for _, rule := range e.rules {
 		locs := rule.Pattern.FindStringIndex(text)
 		if locs == nil {
@@ -36,12 +67,16 @@ func (e *Engine) Inspect(text string) []Match {
 		if snipEnd < len(text) {
 			snippet = snippet + "…"
 		}
-		matches = append(matches, Match{
+		result.Matches = append(result.Matches, Match{
 			RuleID:   rule.ID,
 			RuleName: rule.Name,
 			Severity: string(rule.Severity),
+			Mode:     string(rule.Mode),
 			Snippet:  snippet,
 		})
+		if rule.Mode == ModeBlock {
+			result.Blocked = true
+		}
 	}
-	return matches
+	return result
 }

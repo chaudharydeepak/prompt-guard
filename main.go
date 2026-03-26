@@ -36,6 +36,13 @@ func main() {
 
 	eng := inspector.New()
 
+	// Apply any persisted rule mode overrides.
+	if overrides, err := db.LoadRuleOverrides(); err == nil {
+		for id, mode := range overrides {
+			eng.SetMode(id, inspector.Mode(mode))
+		}
+	}
+
 	printSetup(ca.CertPath, *port, *webPort)
 	web.Start(*webPort, db, eng)
 	log.Fatal(proxy.Start(*port, ca, db, eng))

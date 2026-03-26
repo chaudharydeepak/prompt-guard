@@ -9,13 +9,22 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// FlaggedPrompt is a prompt that triggered at least one rule.
-type FlaggedPrompt struct {
+type Status string
+
+const (
+	StatusClean   Status = "clean"
+	StatusFlagged Status = "flagged"
+	StatusBlocked Status = "blocked"
+)
+
+// Prompt is an intercepted prompt with its inspection outcome.
+type Prompt struct {
 	ID        int64
 	Timestamp time.Time
 	Host      string
 	Path      string
 	Prompt    string
+	Status    Status
 	Matches   []inspector.Match
 }
 
@@ -28,90 +37,141 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1) // SQLite: single writer
+	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
 	return s, s.migrate()
 }
 
 func (s *Store) migrate() error {
 	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS flagged_prompts (
+		CREATE TABLE IF NOT EXISTS rule_overrides (
+			rule_id TEXT PRIMARY KEY,
+			mode    TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS prompts (
 			id        INTEGER PRIMARY KEY AUTOINCREMENT,
 			timestamp INTEGER NOT NULL,
 			host      TEXT    NOT NULL,
 			path      TEXT    NOT NULL,
 			prompt    TEXT    NOT NULL,
-			matches   TEXT    NOT NULL
+			status    TEXT    NOT NULL DEFAULT 'clean',
+			matches   TEXT    NOT NULL DEFAULT '[]'
 		);
-		CREATE INDEX IF NOT EXISTS idx_ts ON flagged_prompts(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_ts     ON prompts(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_status ON prompts(status);
 	`)
 	return err
 }
 
-func (s *Store) SaveFlag(f FlaggedPrompt) error {
-	b, _ := json.Marshal(f.Matches)
+func (s *Store) SavePrompt(p Prompt) error {
+	b, _ := json.Marshal(p.Matches)
+	if b == nil {
+		b = []byte("[]")
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO flagged_prompts (timestamp, host, path, prompt, matches) VALUES (?,?,?,?,?)`,
-		f.Timestamp.Unix(), f.Host, f.Path, f.Prompt, string(b),
+		`INSERT INTO prompts (timestamp, host, path, prompt, status, matches) VALUES (?,?,?,?,?,?)`,
+		p.Timestamp.Unix(), p.Host, p.Path, p.Prompt, string(p.Status), string(b),
 	)
 	return err
 }
 
-func (s *Store) ListFlags(limit int) ([]FlaggedPrompt, error) {
-	rows, err := s.db.Query(
-		`SELECT id, timestamp, host, path, prompt, matches
-		 FROM flagged_prompts ORDER BY timestamp DESC LIMIT ?`, limit,
-	)
+func (s *Store) ListPrompts(statusFilter string, limit int) ([]Prompt, error) {
+	var rows *sql.Rows
+	var err error
+	if statusFilter == "" || statusFilter == "all" {
+		rows, err = s.db.Query(
+			`SELECT id, timestamp, host, path, prompt, status, matches
+			 FROM prompts ORDER BY timestamp DESC LIMIT ?`, limit,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id, timestamp, host, path, prompt, status, matches
+			 FROM prompts WHERE status = ? ORDER BY timestamp DESC LIMIT ?`,
+			statusFilter, limit,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanPrompts(rows)
+}
 
-	var out []FlaggedPrompt
+func (s *Store) GetPrompt(id int64) (*Prompt, error) {
+	row := s.db.QueryRow(
+		`SELECT id, timestamp, host, path, prompt, status, matches FROM prompts WHERE id = ?`, id,
+	)
+	var p Prompt
+	var ts int64
+	var matchJSON string
+	if err := row.Scan(&p.ID, &ts, &p.Host, &p.Path, &p.Prompt, &p.Status, &matchJSON); err != nil {
+		return nil, err
+	}
+	p.Timestamp = time.Unix(ts, 0)
+	_ = json.Unmarshal([]byte(matchJSON), &p.Matches)
+	return &p, nil
+}
+
+func scanPrompts(rows *sql.Rows) ([]Prompt, error) {
+	var out []Prompt
 	for rows.Next() {
-		var f FlaggedPrompt
+		var p Prompt
 		var ts int64
 		var matchJSON string
-		if err := rows.Scan(&f.ID, &ts, &f.Host, &f.Path, &f.Prompt, &matchJSON); err != nil {
+		if err := rows.Scan(&p.ID, &ts, &p.Host, &p.Path, &p.Prompt, &p.Status, &matchJSON); err != nil {
 			return nil, err
 		}
-		f.Timestamp = time.Unix(ts, 0)
-		_ = json.Unmarshal([]byte(matchJSON), &f.Matches)
-		out = append(out, f)
+		p.Timestamp = time.Unix(ts, 0)
+		_ = json.Unmarshal([]byte(matchJSON), &p.Matches)
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 
-func (s *Store) GetFlag(id int64) (*FlaggedPrompt, error) {
-	row := s.db.QueryRow(
-		`SELECT id, timestamp, host, path, prompt, matches
-		 FROM flagged_prompts WHERE id = ?`, id,
-	)
-	var f FlaggedPrompt
-	var ts int64
-	var matchJSON string
-	if err := row.Scan(&f.ID, &ts, &f.Host, &f.Path, &f.Prompt, &matchJSON); err != nil {
-		return nil, err
-	}
-	f.Timestamp = time.Unix(ts, 0)
-	_ = json.Unmarshal([]byte(matchJSON), &f.Matches)
-	return &f, nil
-}
-
 type Stats struct {
-	Total         int    `json:"total"`
-	Today         int    `json:"today"`
+	Total           int    `json:"total"`
+	Clean           int    `json:"clean"`
+	Flagged         int    `json:"flagged"`
+	Blocked         int    `json:"blocked"`
 	MostFlaggedHost string `json:"most_flagged_host"`
-	TopRule       string `json:"top_rule"`
 }
 
 func (s *Store) Stats() Stats {
 	var st Stats
-	s.db.QueryRow(`SELECT COUNT(*) FROM flagged_prompts`).Scan(&st.Total)
-	today := time.Now().Truncate(24 * time.Hour).Unix()
-	s.db.QueryRow(`SELECT COUNT(*) FROM flagged_prompts WHERE timestamp >= ?`, today).Scan(&st.Today)
+	s.db.QueryRow(`SELECT COUNT(*) FROM prompts`).Scan(&st.Total)
+	s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status='clean'`).Scan(&st.Clean)
+	s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status='flagged'`).Scan(&st.Flagged)
+	s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status='blocked'`).Scan(&st.Blocked)
 	s.db.QueryRow(
-		`SELECT host FROM flagged_prompts GROUP BY host ORDER BY COUNT(*) DESC LIMIT 1`,
+		`SELECT host FROM prompts WHERE status!='clean' GROUP BY host ORDER BY COUNT(*) DESC LIMIT 1`,
 	).Scan(&st.MostFlaggedHost)
 	return st
+}
+
+// SetRuleMode persists a rule mode override and returns it on next load.
+func (s *Store) SetRuleMode(ruleID, mode string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO rule_overrides (rule_id, mode) VALUES (?,?)
+		 ON CONFLICT(rule_id) DO UPDATE SET mode=excluded.mode`,
+		ruleID, mode,
+	)
+	return err
+}
+
+// LoadRuleOverrides returns all persisted rule mode overrides.
+func (s *Store) LoadRuleOverrides() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT rule_id, mode FROM rule_overrides`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var id, mode string
+		if err := rows.Scan(&id, &mode); err != nil {
+			return nil, err
+		}
+		out[id] = mode
+	}
+	return out, rows.Err()
 }
