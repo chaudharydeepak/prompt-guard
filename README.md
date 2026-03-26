@@ -147,4 +147,4 @@ prompt-guard/
 
 ## License
 
-MIT
+AGPL
