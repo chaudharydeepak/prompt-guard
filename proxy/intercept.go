@@ -97,7 +97,10 @@ func extractContent(raw json.RawMessage) []string {
 }
 
 // userQueryOrFull extracts only the text inside <user_query>...</user_query>
-// when that tag is present (Copilot's format). Falls back to the full text.
+// when that tag is present (Copilot's format).
+// If no user_query tag is found but the content starts with an XML tag (e.g.
+// Copilot's <context> / <editorContext> injections), it is skipped — those are
+// system-injected context, not the user's actual message.
 func userQueryOrFull(text string) []string {
 	const open, close = "<user_query>", "</user_query>"
 	if start := strings.Index(text, open); start >= 0 {
@@ -109,9 +112,13 @@ func userQueryOrFull(text string) []string {
 			}
 		}
 	}
-	// No user_query tag — return as-is (legacy / non-Copilot formats).
-	if strings.TrimSpace(text) != "" {
-		return []string{text}
+	trimmed := strings.TrimSpace(text)
+	// Skip system-injected XML blocks (start with '<').
+	if strings.HasPrefix(trimmed, "<") {
+		return nil
+	}
+	if trimmed != "" {
+		return []string{trimmed}
 	}
 	return nil
 }

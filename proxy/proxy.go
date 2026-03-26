@@ -144,8 +144,19 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 			log.Printf("BODY SAMPLE: %s", string(body[:end]))
 		}
 
-		// Inspect before forwarding; block if a blocking rule fired.
-		if blocked, msg := p.inspectAndStore(req, hostport, body); blocked {
+		// Redact track-mode matches from the extracted prompt text, then
+		// replace each matched value in the raw body before forwarding.
+		combined := strings.Join(prompts, "\n\n")
+		redactedCombined, redactions := p.eng.RedactText(combined)
+		redactedBody := body
+		if len(redactions) > 0 {
+			redactedBody = p.eng.RedactBodyForForwarding(body)
+			req.Body = io.NopCloser(bytes.NewReader(redactedBody))
+			req.ContentLength = int64(len(redactedBody))
+		}
+
+		// Inspect original body for block-mode rules; block if triggered.
+		if blocked, msg := p.inspectAndStore(req, hostport, combined, redactedCombined, redactions); blocked {
 			writeBlockedResponse(tlsClient, msg, IsStreaming(body), req.URL.Path)
 			return
 		}
@@ -191,43 +202,47 @@ func (p *proxy) forward(dst net.Conn, req *http.Request, hostport string) error 
 }
 
 // inspectAndStore stores every intercepted prompt.
-// Returns (blocked, assistantMessage) — if blocked is true the caller should
-// write assistantMessage back to the client instead of forwarding.
-func (p *proxy) inspectAndStore(req *http.Request, host string, body []byte) (bool, string) {
-	prompts := ExtractPrompts(body)
-	if len(prompts) == 0 {
+// redactions are track-mode matches already applied to the forwarded body.
+// Returns (blocked, assistantMessage).
+func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombined string, redactions []inspector.Match) (bool, string) {
+	if combined == "" && len(redactions) == 0 {
 		return false, ""
 	}
 
-	combined := strings.Join(prompts, "\n\n")
 	result := p.eng.Inspect(combined)
+
+	// Merge block-mode matches with redactions for storage.
+	allMatches := append(result.Matches, redactions...)
 
 	status := store.StatusClean
 	if result.Blocked {
 		status = store.StatusBlocked
+	} else if len(redactions) > 0 {
+		status = store.StatusRedacted
 	} else if len(result.Matches) > 0 {
 		status = store.StatusFlagged
 	}
 
+	log.Printf("STORE: status=%s host=%s rules=%d", status, stripPort(host), len(allMatches))
 	err := p.db.SavePrompt(store.Prompt{
-		Timestamp: time.Now(),
-		Host:      stripPort(host),
-		Path:      req.URL.Path,
-		Prompt:    combined,
-		Status:    status,
-		Matches:   result.Matches,
+		Timestamp:      time.Now(),
+		Host:           stripPort(host),
+		Path:           req.URL.Path,
+		Prompt:         combined,
+		RedactedPrompt: redactedCombined,
+		Status:         status,
+		Matches:        allMatches,
 	})
 	if err != nil {
-		log.Printf("store: %v", err)
+		log.Printf("store ERROR: %v", err)
 	} else if status != store.StatusClean {
-		log.Printf("%s: %s%s — %d rule(s)", strings.ToUpper(string(status)), stripPort(host), req.URL.Path, len(result.Matches))
+		log.Printf("%s: %s%s — %d rule(s)", strings.ToUpper(string(status)), stripPort(host), req.URL.Path, len(allMatches))
 	}
 
 	if !result.Blocked {
 		return false, ""
 	}
 
-	// Build a human-readable list of triggered blocking rules.
 	var ruleNames []string
 	for _, m := range result.Matches {
 		if m.Mode == "block" {

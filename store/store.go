@@ -12,20 +12,22 @@ import (
 type Status string
 
 const (
-	StatusClean   Status = "clean"
-	StatusFlagged Status = "flagged"
-	StatusBlocked Status = "blocked"
+	StatusClean    Status = "clean"
+	StatusFlagged  Status = "flagged"
+	StatusRedacted Status = "redacted"
+	StatusBlocked  Status = "blocked"
 )
 
 // Prompt is an intercepted prompt with its inspection outcome.
 type Prompt struct {
-	ID        int64
-	Timestamp time.Time
-	Host      string
-	Path      string
-	Prompt    string
-	Status    Status
-	Matches   []inspector.Match
+	ID             int64
+	Timestamp      time.Time
+	Host           string
+	Path           string
+	Prompt         string
+	RedactedPrompt string
+	Status         Status
+	Matches        []inspector.Match
 }
 
 type Store struct {
@@ -49,18 +51,24 @@ func (s *Store) migrate() error {
 			mode    TEXT NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS prompts (
-			id        INTEGER PRIMARY KEY AUTOINCREMENT,
-			timestamp INTEGER NOT NULL,
-			host      TEXT    NOT NULL,
-			path      TEXT    NOT NULL,
-			prompt    TEXT    NOT NULL,
-			status    TEXT    NOT NULL DEFAULT 'clean',
-			matches   TEXT    NOT NULL DEFAULT '[]'
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp        INTEGER NOT NULL,
+			host             TEXT    NOT NULL,
+			path             TEXT    NOT NULL,
+			prompt           TEXT    NOT NULL,
+			status           TEXT    NOT NULL DEFAULT 'clean',
+			matches          TEXT    NOT NULL DEFAULT '[]',
+			redacted_prompt  TEXT    NOT NULL DEFAULT ''
 		);
 		CREATE INDEX IF NOT EXISTS idx_ts     ON prompts(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_status ON prompts(status);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Add redacted_prompt column to existing databases that predate this migration.
+	s.db.Exec(`ALTER TABLE prompts ADD COLUMN redacted_prompt TEXT NOT NULL DEFAULT ''`)
+	return nil
 }
 
 func (s *Store) SavePrompt(p Prompt) error {
@@ -69,8 +77,8 @@ func (s *Store) SavePrompt(p Prompt) error {
 		b = []byte("[]")
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO prompts (timestamp, host, path, prompt, status, matches) VALUES (?,?,?,?,?,?)`,
-		p.Timestamp.Unix(), p.Host, p.Path, p.Prompt, string(p.Status), string(b),
+		`INSERT INTO prompts (timestamp, host, path, prompt, status, matches, redacted_prompt) VALUES (?,?,?,?,?,?,?)`,
+		p.Timestamp.Unix(), p.Host, p.Path, p.Prompt, string(p.Status), string(b), p.RedactedPrompt,
 	)
 	return err
 }
@@ -80,12 +88,12 @@ func (s *Store) ListPrompts(statusFilter string, limit int) ([]Prompt, error) {
 	var err error
 	if statusFilter == "" || statusFilter == "all" {
 		rows, err = s.db.Query(
-			`SELECT id, timestamp, host, path, prompt, status, matches
+			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt
 			 FROM prompts ORDER BY timestamp DESC LIMIT ?`, limit,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, timestamp, host, path, prompt, status, matches
+			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt
 			 FROM prompts WHERE status = ? ORDER BY timestamp DESC LIMIT ?`,
 			statusFilter, limit,
 		)
@@ -99,12 +107,12 @@ func (s *Store) ListPrompts(statusFilter string, limit int) ([]Prompt, error) {
 
 func (s *Store) GetPrompt(id int64) (*Prompt, error) {
 	row := s.db.QueryRow(
-		`SELECT id, timestamp, host, path, prompt, status, matches FROM prompts WHERE id = ?`, id,
+		`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt FROM prompts WHERE id = ?`, id,
 	)
 	var p Prompt
 	var ts int64
 	var matchJSON string
-	if err := row.Scan(&p.ID, &ts, &p.Host, &p.Path, &p.Prompt, &p.Status, &matchJSON); err != nil {
+	if err := row.Scan(&p.ID, &ts, &p.Host, &p.Path, &p.Prompt, &p.Status, &matchJSON, &p.RedactedPrompt); err != nil {
 		return nil, err
 	}
 	p.Timestamp = time.Unix(ts, 0)
@@ -118,7 +126,7 @@ func scanPrompts(rows *sql.Rows) ([]Prompt, error) {
 		var p Prompt
 		var ts int64
 		var matchJSON string
-		if err := rows.Scan(&p.ID, &ts, &p.Host, &p.Path, &p.Prompt, &p.Status, &matchJSON); err != nil {
+		if err := rows.Scan(&p.ID, &ts, &p.Host, &p.Path, &p.Prompt, &p.Status, &matchJSON, &p.RedactedPrompt); err != nil {
 			return nil, err
 		}
 		p.Timestamp = time.Unix(ts, 0)
@@ -132,6 +140,7 @@ type Stats struct {
 	Total           int    `json:"total"`
 	Clean           int    `json:"clean"`
 	Flagged         int    `json:"flagged"`
+	Redacted        int    `json:"redacted"`
 	Blocked         int    `json:"blocked"`
 	MostFlaggedHost string `json:"most_flagged_host"`
 }
@@ -141,6 +150,7 @@ func (s *Store) Stats() Stats {
 	s.db.QueryRow(`SELECT COUNT(*) FROM prompts`).Scan(&st.Total)
 	s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status='clean'`).Scan(&st.Clean)
 	s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status='flagged'`).Scan(&st.Flagged)
+	s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status='redacted'`).Scan(&st.Redacted)
 	s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status='blocked'`).Scan(&st.Blocked)
 	s.db.QueryRow(
 		`SELECT host FROM prompts WHERE status!='clean' GROUP BY host ORDER BY COUNT(*) DESC LIMIT 1`,

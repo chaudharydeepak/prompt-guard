@@ -21,6 +21,7 @@ type Rule struct {
 	Pattern     *regexp.Regexp
 	Severity    Severity
 	Mode        Mode
+	Replacement string // used by RedactText; "$1[REDACTED]" preserves capture group 1
 }
 
 type Match struct {
@@ -39,6 +40,7 @@ var BuiltinRules = []Rule{
 		Pattern:     regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
 		Severity:    SeverityHigh,
 		Mode:        ModeBlock,
+		Replacement: "[REDACTED]",
 	},
 	{
 		ID:          "aws-secret-key",
@@ -47,6 +49,7 @@ var BuiltinRules = []Rule{
 		Pattern:     regexp.MustCompile(`(?i)aws.{0,20}secret.{0,20}['"]?([0-9a-zA-Z/+]{40})['"]?`),
 		Severity:    SeverityHigh,
 		Mode:        ModeBlock,
+		Replacement: "[REDACTED]",
 	},
 	{
 		ID:          "anthropic-key",
@@ -55,14 +58,16 @@ var BuiltinRules = []Rule{
 		Pattern:     regexp.MustCompile(`sk-ant-[a-zA-Z0-9\-_]{20,}`),
 		Severity:    SeverityHigh,
 		Mode:        ModeBlock,
+		Replacement: "[REDACTED]",
 	},
 	{
 		ID:          "openai-key",
 		Name:        "OpenAI API Key",
 		Description: "OpenAI API key (sk-...)",
-		Pattern:     regexp.MustCompile(`sk-[a-zA-Z0-9T]{20,}`),
+		Pattern:     regexp.MustCompile(`sk-[a-zA-Z0-9\-_]{20,}`),
 		Severity:    SeverityHigh,
 		Mode:        ModeBlock,
+		Replacement: "[REDACTED]",
 	},
 	{
 		ID:          "github-token",
@@ -71,6 +76,7 @@ var BuiltinRules = []Rule{
 		Pattern:     regexp.MustCompile(`gh[pousr]_[a-zA-Z0-9]{36,}`),
 		Severity:    SeverityHigh,
 		Mode:        ModeBlock,
+		Replacement: "[REDACTED]",
 	},
 	{
 		ID:          "private-key",
@@ -79,6 +85,7 @@ var BuiltinRules = []Rule{
 		Pattern:     regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`),
 		Severity:    SeverityHigh,
 		Mode:        ModeBlock,
+		Replacement: "[REDACTED]",
 	},
 	{
 		ID:          "ssn",
@@ -87,6 +94,7 @@ var BuiltinRules = []Rule{
 		Pattern:     regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
 		Severity:    SeverityHigh,
 		Mode:        ModeBlock,
+		Replacement: "[REDACTED]",
 	},
 	{
 		ID:          "credit-card",
@@ -95,6 +103,7 @@ var BuiltinRules = []Rule{
 		Pattern:     regexp.MustCompile(`\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b`),
 		Severity:    SeverityHigh,
 		Mode:        ModeBlock,
+		Replacement: "[REDACTED]",
 	},
 	{
 		ID:          "jwt-token",
@@ -103,14 +112,18 @@ var BuiltinRules = []Rule{
 		Pattern:     regexp.MustCompile(`eyJ[a-zA-Z0-9_\-]+\.eyJ[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+`),
 		Severity:    SeverityMedium,
 		Mode:        ModeTrack,
+		Replacement: "[REDACTED]",
 	},
 	{
+		// Pattern has two groups: (1) keyword+separator, (2) secret value.
+		// Replacement $1[REDACTED] keeps "api_key=" and redacts only the value.
 		ID:          "generic-secret",
 		Name:        "Generic Secret / Password",
 		Description: "Password/secret keyword followed by a value (any separator)",
-		Pattern:     regexp.MustCompile(`(?i)(secret|password|passwd|api_key|apikey)\s*(?:is|=|:|\s)\s*['"]?[a-zA-Z0-9+/!@#$%^&*]{4,}['"]?`),
+		Pattern:     regexp.MustCompile(`(?i)(\b(?:access[\s_-]?key|secret[\s_-]?key|api[\s_-]?key|auth[\s_-]?token|bearer|password|passwd|secret)\b\s*(?:is|=|:|with|\s)\s*['"]?)([a-zA-Z0-9+/!\-_@#$%^&*]{4,}['"]?)`),
 		Severity:    SeverityMedium,
 		Mode:        ModeTrack,
+		Replacement: "${1}[REDACTED]",
 	},
 	{
 		ID:          "email",
@@ -119,6 +132,7 @@ var BuiltinRules = []Rule{
 		Pattern:     regexp.MustCompile(`\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b`),
 		Severity:    SeverityLow,
 		Mode:        ModeTrack,
+		Replacement: "[REDACTED]",
 	},
 	{
 		ID:          "internal-ip",
@@ -127,5 +141,6 @@ var BuiltinRules = []Rule{
 		Pattern:     regexp.MustCompile(`\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b`),
 		Severity:    SeverityLow,
 		Mode:        ModeTrack,
+		Replacement: "[REDACTED]",
 	},
 }

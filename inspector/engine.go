@@ -41,12 +41,56 @@ func (e *Engine) SetMode(ruleID string, mode Mode) bool {
 	return false
 }
 
+// RedactText replaces all track-mode rule matches in the extracted prompt text.
+// Returns the redacted text and one Match per rule that fired.
+func (e *Engine) RedactText(text string) (string, []Match) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	result := text
+	var matches []Match
+	for _, rule := range e.rules {
+		if rule.Mode != ModeTrack {
+			continue
+		}
+		if !rule.Pattern.MatchString(result) {
+			continue
+		}
+		result = rule.Pattern.ReplaceAllString(result, rule.Replacement)
+		matches = append(matches, Match{
+			RuleID:   rule.ID,
+			RuleName: rule.Name,
+			Severity: string(rule.Severity),
+			Mode:     string(rule.Mode),
+			Snippet:  "[REDACTED]",
+		})
+	}
+	return result, matches
+}
+
+// RedactBodyForForwarding applies all track-mode replacements to the raw request body.
+func (e *Engine) RedactBodyForForwarding(body []byte) []byte {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	s := string(body)
+	for _, rule := range e.rules {
+		if rule.Mode == ModeTrack {
+			s = rule.Pattern.ReplaceAllString(s, rule.Replacement)
+		}
+	}
+	return []byte(s)
+}
+
 func (e *Engine) Inspect(text string) Result {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	var result Result
 	for _, rule := range e.rules {
+		if rule.Mode != ModeBlock {
+			continue
+		}
 		locs := rule.Pattern.FindStringIndex(text)
 		if locs == nil {
 			continue
