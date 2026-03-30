@@ -2,6 +2,8 @@
 
 A lightweight HTTPS MITM proxy that intercepts prompts sent to AI coding assistants and APIs — flagging sensitive data before it leaves your machine.
 
+![Prompt Guard demo](demo.gif)
+
 ## Why
 
 AI tools like GitHub Copilot, ChatGPT, and Claude receive your full editor context. That context can contain API keys, passwords, SSNs, internal IP addresses, and other secrets — sent to third-party servers without you noticing. Prompt Guard sits between your tools and the AI APIs, inspects every prompt in real time, and alerts you when something sensitive is about to be sent.
