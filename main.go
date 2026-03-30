@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 
 	"github.com/chaudharydeepak/prompt-guard/inspector"
@@ -36,15 +37,34 @@ func main() {
 
 	eng := inspector.New()
 
-	// Apply any persisted rule mode overrides.
-	if overrides, err := db.LoadRuleOverrides(); err == nil {
-		for id, mode := range overrides {
-			eng.SetMode(id, inspector.Mode(mode))
+	// Load rules.json config (custom rules + overrides). Missing file is fine.
+	cfg, err := inspector.LoadConfig(filepath.Join(*caDir, "rules.json"))
+	if err != nil {
+		log.Fatalf("rules.json: %v", err)
+	}
+	for _, o := range cfg.Overrides {
+		if o.Mode != "" {
+			eng.SetMode(o.ID, inspector.Mode(o.Mode))
 		}
+		if o.Severity != "" {
+			eng.SetSeverity(o.ID, inspector.Severity(o.Severity))
+		}
+	}
+	for _, rc := range cfg.Rules {
+		pat := regexp.MustCompile(rc.Pattern)
+		eng.AddRule(inspector.Rule{
+			ID:          rc.ID,
+			Name:        rc.Name,
+			Description: rc.Description,
+			Pattern:     pat,
+			Severity:    inspector.Severity(rc.Severity),
+			Mode:        inspector.Mode(rc.Mode),
+			Replacement: "[REDACTED]",
+		})
 	}
 
 	printSetup(ca.CertPath, *port, *webPort)
-	web.Start(*webPort, db, eng)
+	web.Start(*webPort, db, eng, filepath.Join(*caDir, "rules.json"))
 	log.Fatal(proxy.Start(*port, ca, db, eng))
 }
 
@@ -69,5 +89,6 @@ func printSetup(certPath string, port, webPort int) {
 	}
 
 	fmt.Printf("Set proxy:\n  export HTTP_PROXY=http://localhost:%d\n  export HTTPS_PROXY=http://localhost:%d\n  export NO_PROXY=localhost,127.0.0.1\n\n", port, port)
-	fmt.Printf("Dashboard: http://localhost:%d\n\n", webPort)
+	fmt.Printf("Dashboard:  http://localhost:%d\n", webPort)
+	fmt.Printf("Rules file: %s\n\n", filepath.Join(filepath.Dir(certPath), "rules.json"))
 }

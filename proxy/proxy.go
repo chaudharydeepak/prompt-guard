@@ -132,10 +132,9 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 
 		log.Printf("REQUEST: %s %s%s body=%d bytes stream=%v", req.Method, stripPort(hostport), req.URL.Path, len(body), IsStreaming(body))
 		prompts := ExtractPrompts(body)
+		displayPrompt := ExtractUserQuery(body)
 		log.Printf("EXTRACTED: %d prompt(s)", len(prompts))
-		for i, p := range prompts {
-			log.Printf("  [%d] %.120s", i, p)
-		}
+		log.Printf("  query: %.120s", displayPrompt)
 		if len(prompts) == 0 && len(body) > 0 && len(body) < 4096 && (body[0] == '{' || body[0] == '[') {
 			end := 2000
 			if len(body) < end {
@@ -144,7 +143,7 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 			log.Printf("BODY SAMPLE: %s", string(body[:end]))
 		}
 
-		// Redact track-mode matches from the extracted prompt text, then
+		// Redact track-mode matches from the full inspection text, then
 		// replace each matched value in the raw body before forwarding.
 		combined := strings.Join(prompts, "\n\n")
 		redactedCombined, redactions := p.eng.RedactText(combined)
@@ -155,8 +154,13 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 			req.ContentLength = int64(len(redactedBody))
 		}
 
-		// Inspect original body for block-mode rules; block if triggered.
-		if blocked, msg := p.inspectAndStore(req, hostport, combined, redactedCombined, redactions); blocked {
+		// Background Copilot requests (title, summary, progress messages) must
+		// never be blocked — their responses surface directly in the chat UI, so
+		// a block response from us appears as a spurious chat message. We still
+		// inspect and redact them; we just don't terminate the connection.
+		allowBlock := !isCopilotBackground(body)
+
+		if blocked, msg := p.inspectAndStore(req, hostport, combined, redactedCombined, displayPrompt, redactions, allowBlock); blocked {
 			writeBlockedResponse(tlsClient, msg, IsStreaming(body), req.URL.Path)
 			return
 		}
@@ -201,10 +205,36 @@ func (p *proxy) forward(dst net.Conn, req *http.Request, hostport string) error 
 	return resp.Write(dst)
 }
 
+// isCopilotBackground reports whether the request body is a Copilot-internal
+// background call (title generation, summarization, progress messages).
+// These requests contain full conversation history and their responses appear
+// inline in the chat UI — so we must never block them.
+func isCopilotBackground(body []byte) bool {
+	var env struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal(body, &env) != nil {
+		return false
+	}
+	for _, m := range env.Messages {
+		t := strings.TrimSpace(m.Content)
+		if strings.HasPrefix(t, "Summarize the following") ||
+			strings.HasPrefix(t, "Please write a brief title") ||
+			strings.HasPrefix(t, "Please generate exactly") {
+			return true
+		}
+	}
+	return false
+}
+
 // inspectAndStore stores every intercepted prompt.
 // redactions are track-mode matches already applied to the forwarded body.
+// allowBlock: if false, block-mode rules are recorded but the request is not terminated.
 // Returns (blocked, assistantMessage).
-func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombined string, redactions []inspector.Match) (bool, string) {
+func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombined, displayPrompt string, redactions []inspector.Match, allowBlock bool) (bool, string) {
 	if combined == "" && len(redactions) == 0 {
 		return false, ""
 	}
@@ -215,31 +245,42 @@ func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombi
 	allMatches := append(result.Matches, redactions...)
 
 	status := store.StatusClean
-	if result.Blocked {
+	if result.Blocked && allowBlock {
 		status = store.StatusBlocked
-	} else if len(redactions) > 0 {
+	} else if result.Blocked || len(redactions) > 0 {
 		status = store.StatusRedacted
 	} else if len(result.Matches) > 0 {
 		status = store.StatusFlagged
 	}
+
+	// Store the user's display prompt; fall back to combined if empty.
+	storedPrompt := displayPrompt
+	if storedPrompt == "" {
+		storedPrompt = combined
+	}
+	redactedDisplay, _ := p.eng.RedactText(storedPrompt)
 
 	log.Printf("STORE: status=%s host=%s rules=%d", status, stripPort(host), len(allMatches))
 	err := p.db.SavePrompt(store.Prompt{
 		Timestamp:      time.Now(),
 		Host:           stripPort(host),
 		Path:           req.URL.Path,
-		Prompt:         combined,
-		RedactedPrompt: redactedCombined,
+		Prompt:         storedPrompt,
+		RedactedPrompt: redactedDisplay,
 		Status:         status,
 		Matches:        allMatches,
 	})
 	if err != nil {
 		log.Printf("store ERROR: %v", err)
 	} else if status != store.StatusClean {
-		log.Printf("%s: %s%s — %d rule(s)", strings.ToUpper(string(status)), stripPort(host), req.URL.Path, len(allMatches))
+		names := make([]string, 0, len(allMatches))
+		for _, m := range allMatches {
+			names = append(names, m.RuleName)
+		}
+		log.Printf("%s: %s%s — %s", strings.ToUpper(string(status)), stripPort(host), req.URL.Path, strings.Join(names, ", "))
 	}
 
-	if !result.Blocked {
+	if !result.Blocked || !allowBlock {
 		return false, ""
 	}
 

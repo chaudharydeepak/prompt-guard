@@ -14,7 +14,7 @@ import (
 )
 
 // Start runs the web dashboard on the given port. Non-blocking.
-func Start(port int, db *store.Store, eng *inspector.Engine) {
+func Start(port int, db *store.Store, eng *inspector.Engine, configPath string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/prompts", func(w http.ResponseWriter, r *http.Request) {
 		apiPrompts(w, r, db)
@@ -26,7 +26,7 @@ func Start(port int, db *store.Store, eng *inspector.Engine) {
 		apiRules(w, r, eng)
 	})
 	mux.HandleFunc("/api/rules/", func(w http.ResponseWriter, r *http.Request) {
-		apiRuleMode(w, r, db, eng)
+		apiRuleMode(w, r, db, eng, configPath)
 	})
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		apiStats(w, r, db)
@@ -112,7 +112,7 @@ func apiPromptDetail(w http.ResponseWriter, r *http.Request, db *store.Store) {
 }
 
 // POST /api/rules/{id}/mode  body: {"mode":"track"|"block"}
-func apiRuleMode(w http.ResponseWriter, r *http.Request, db *store.Store, eng *inspector.Engine) {
+func apiRuleMode(w http.ResponseWriter, r *http.Request, db *store.Store, eng *inspector.Engine, configPath string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -135,6 +135,12 @@ func apiRuleMode(w http.ResponseWriter, r *http.Request, db *store.Store, eng *i
 		http.NotFound(w, r)
 		return
 	}
+	// Config file is source of truth — write there first.
+	if err := inspector.UpdateConfigMode(configPath, ruleID, body.Mode); err != nil {
+		http.Error(w, "failed to update rules.json: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Keep DB in sync.
 	if err := db.SetRuleMode(ruleID, body.Mode); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -573,13 +579,14 @@ function toggleDetail(id) {
   anchor.after(detail);
 }
 
+var lastTopId = null;
+
 async function refresh() {
   try {
     var url = '/api/prompts'+(currentFilter !== 'all' ? '?status='+currentFilter : '');
-    var [pr, sr, rr] = await Promise.all([fetch(url), fetch('/api/stats'), fetch('/api/rules')]);
+    var [pr, sr] = await Promise.all([fetch(url), fetch('/api/stats')]);
     var prompts = await pr.json();
     var stats   = await sr.json();
-    var rules   = await rr.json();
 
     document.getElementById('meta').textContent = new Date().toLocaleTimeString();
     document.getElementById('tile-total').textContent    = stats.total    || 0;
@@ -589,6 +596,10 @@ async function refresh() {
     document.getElementById('tile-blocked').textContent  = stats.blocked  || 0;
     document.getElementById('tile-host').textContent     = stats.most_flagged_host || '—';
     document.getElementById('prompt-count').textContent  = prompts.length;
+
+    var newTopId = prompts.length > 0 ? prompts[0].id : null;
+    if (newTopId === lastTopId) return; // nothing new — leave DOM untouched
+    lastTopId = newTopId;
 
     window._promptData = {};
     prompts.forEach(function(p){ window._promptData[p.id] = p; });
@@ -607,6 +618,18 @@ async function refresh() {
             '</tr>';
         }).join('');
 
+    if (wasOpen !== null && window._promptData[wasOpen]) {
+      openRow = null;
+      toggleDetail(wasOpen);
+    }
+  } catch(e) {
+    document.getElementById('meta').textContent = 'error: '+e.message;
+  }
+}
+
+async function loadRules() {
+  try {
+    var rules = await fetch('/api/rules').then(function(r){ return r.json(); });
     document.getElementById('rules-count').textContent = rules.length;
     document.getElementById('rules-list').innerHTML = rules.map(function(r) {
       var isBlock = r.mode === 'block';
@@ -625,14 +648,7 @@ async function refresh() {
         '<div class="rule-foot">'+sevTag(r.severity)+'</div>' +
         '</div>';
     }).join('');
-
-    if (wasOpen !== null && window._promptData[wasOpen]) {
-      openRow = null;
-      toggleDetail(wasOpen);
-    }
-  } catch(e) {
-    document.getElementById('meta').textContent = 'error: '+e.message;
-  }
+  } catch(e) { /* ignore */ }
 }
 
 async function setMode(ruleID, mode, btn) {
@@ -644,13 +660,15 @@ async function setMode(ruleID, mode, btn) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({mode: mode}),
     });
-    await refresh();
+    lastTopId = null; // force prompt list re-render after rule change
+    await Promise.all([refresh(), loadRules()]);
   } finally {
     if (seg) seg.querySelectorAll('.seg-btn').forEach(function(b){ b.disabled = false; });
   }
 }
 
 refresh();
+loadRules();
 setInterval(refresh, 3000);
 </script>
 </body>

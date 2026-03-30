@@ -77,8 +77,32 @@ Set proxy:
   export HTTPS_PROXY=http://localhost:8080
   export NO_PROXY=localhost,127.0.0.1
 
-Dashboard: http://localhost:7778
+Dashboard:  http://localhost:7778
+Rules file: /Users/you/.prompt-guard/rules.json
 ```
+
+### Using with Claude CLI
+
+Node.js ignores the system keychain, so you need one extra env var:
+
+```bash
+export NODE_EXTRA_CA_CERTS=~/.prompt-guard/ca.crt
+export HTTP_PROXY=http://localhost:8080
+export HTTPS_PROXY=http://localhost:8080
+export NO_PROXY=localhost,127.0.0.1
+claude
+```
+
+To avoid setting these every time, add them to your `~/.zshrc` (or `~/.bashrc`):
+
+```bash
+export NODE_EXTRA_CA_CERTS=~/.prompt-guard/ca.crt
+export HTTP_PROXY=http://localhost:8080
+export HTTPS_PROXY=http://localhost:8080
+export NO_PROXY=localhost,127.0.0.1
+```
+
+Then open a new terminal and run `claude` as usual.
 
 ### Using with VS Code Copilot
 
@@ -105,6 +129,42 @@ curl --proxy http://localhost:8080 https://api.openai.com/v1/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}'
 ```
+
+## Customizing Rules
+
+Rules are configured in `~/.prompt-guard/rules.json`. The file is created automatically when you first change a rule mode in the dashboard. You can also create it manually.
+
+**Override a built-in rule** (e.g. upgrade email from track to block):
+
+```json
+{
+  "overrides": [
+    { "id": "email", "mode": "block" },
+    { "id": "jwt-token", "severity": "high" }
+  ]
+}
+```
+
+**Add a custom rule**:
+
+```json
+{
+  "rules": [
+    {
+      "id": "my-internal-token",
+      "name": "Acme Internal Token",
+      "description": "Internal service token format",
+      "pattern": "ACME-[A-Z0-9]{32}",
+      "severity": "high",
+      "mode": "block"
+    }
+  ]
+}
+```
+
+Changes to `rules.json` take effect on the next proxy restart. Changes made in the dashboard are written back to `rules.json` automatically and survive restarts.
+
+Available modes: `block` (request is rejected), `track` (prompt is logged and value is redacted before forwarding).
 
 ## Options
 
@@ -138,7 +198,8 @@ prompt-guard/
 │   └── intercept.go     Prompt extraction from OpenAI / Anthropic JSON bodies
 ├── inspector/
 │   ├── engine.go        Rule matching engine
-│   └── rules.go         Built-in rules (regex + metadata)
+│   ├── rules.go         Built-in rules (regex + metadata)
+│   └── config.go        rules.json loading and write-back
 ├── store/
 │   └── store.go         SQLite persistence
 └── web/

@@ -2,20 +2,13 @@ package proxy
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
-type apiRequest struct {
-	Messages []struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"` // string or array of content parts
-	} `json:"messages"`
-	Stream bool   `json:"stream"`
-	Prompt string `json:"prompt"` // OpenAI legacy
-	Input  string `json:"input"`  // generic
-}
+var xmlTagRe = regexp.MustCompile(`<[^>]+>`)
 
-// IsStreaming reports whether the request uses SSE streaming.
+// IsStreaming reports whether the request body uses SSE streaming.
 func IsStreaming(body []byte) bool {
 	var req struct {
 		Stream bool `json:"stream"`
@@ -24,101 +17,245 @@ func IsStreaming(body []byte) bool {
 	return req.Stream
 }
 
-// ExtractPrompts returns only the user content from the current turn —
-// messages after the last assistant message. Skips system/tool messages.
-// For Copilot, extracts only the <user_query> content when present.
+// ExtractPrompts returns the inspectable text from the current turn of an
+// OpenAI (/v1/chat/completions) or Anthropic (/v1/messages) request.
+//
+// "Current turn" = all content after the last assistant message. This avoids
+// re-flagging conversation history on every subsequent request.
+//
+// Both formats share the messages array structure. Key differences handled:
+//   - Anthropic has a top-level "system" field (not a message role)
+//   - Anthropic content blocks use tool_result with nested content arrays
+//   - Copilot injects XML context into message content — stripped before returning
 func ExtractPrompts(body []byte) []string {
-	var req apiRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	if len(body) == 0 {
 		return nil
 	}
 
-	// Find index of last assistant message.
+	var envelope struct {
+		System   json.RawMessage `json:"system"` // Anthropic only — string or block array
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Prompt string `json:"prompt"` // OpenAI legacy completion
+		Input  string `json:"input"`  // generic
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil
+	}
+
+	// Find the last assistant message. Everything after it is the current turn.
 	lastAssistant := -1
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == "assistant" {
+	for i := len(envelope.Messages) - 1; i >= 0; i-- {
+		if envelope.Messages[i].Role == "assistant" {
 			lastAssistant = i
 			break
 		}
 	}
 
-	var out []string
-	for i := lastAssistant + 1; i < len(req.Messages); i++ {
-		if req.Messages[i].Role != "user" {
-			continue
-		}
-		out = append(out, extractContent(req.Messages[i].Content)...)
+	var raw []string
+
+	// Include Anthropic system prompt on the first turn only.
+	// On subsequent turns it has already been sent and inspected.
+	if lastAssistant == -1 && len(envelope.System) > 0 {
+		raw = append(raw, extractContentText(envelope.System)...)
 	}
 
-	if req.Prompt != "" {
-		out = append(out, req.Prompt)
+	// Current turn: all messages after the last assistant message.
+	for i := lastAssistant + 1; i < len(envelope.Messages); i++ {
+		raw = append(raw, extractContentText(envelope.Messages[i].Content)...)
 	}
-	if req.Input != "" {
-		out = append(out, req.Input)
+
+	// Legacy/generic top-level fields.
+	if envelope.Prompt != "" {
+		raw = append(raw, envelope.Prompt)
 	}
-	return out
+	if envelope.Input != "" {
+		raw = append(raw, envelope.Input)
+	}
+
+	return cleanTexts(raw)
 }
 
-// extractContent decodes a content field (string or array of content parts)
-// and returns text fragments. For Copilot's context-wrapped messages it
-// extracts only the <user_query> portion when present.
-func extractContent(raw json.RawMessage) []string {
+// extractContentText recursively pulls plain text out of a content field.
+//
+// Supported shapes:
+//
+//	string              — bare text (both formats)
+//	[]{type,text}       — OpenAI content parts / Anthropic content blocks
+//	tool_result block   — Anthropic; nested content is a string or block array
+//
+// Skipped: image, image_url, audio, tool_use (no inspectable plain text).
+func extractContentText(raw json.RawMessage) []string {
 	if len(raw) == 0 {
 		return nil
 	}
 
-	// Try string.
+	// Bare string.
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
-		return userQueryOrFull(s)
+		if t := strings.TrimSpace(s); t != "" {
+			return []string{t}
+		}
+		return nil
 	}
 
-	// Try array of content parts (Anthropic / OpenAI vision format).
-	var parts []struct {
+	// Array of content blocks or parts.
+	var blocks []struct {
 		Type    string          `json:"type"`
-		Text    string          `json:"text"`
-		Content json.RawMessage `json:"content"` // nested content (tool_result)
+		Text    string          `json:"text"`    // text / text_delta
+		Content json.RawMessage `json:"content"` // tool_result nested payload
 	}
-	if json.Unmarshal(raw, &parts) != nil {
+	if json.Unmarshal(raw, &blocks) != nil {
 		return nil
 	}
 
 	var out []string
-	for _, p := range parts {
-		if p.Text != "" {
-			out = append(out, userQueryOrFull(p.Text)...)
-		}
-		// Recursively handle nested content blocks (e.g. tool_result).
-		if len(p.Content) > 0 {
-			out = append(out, extractContent(p.Content)...)
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			if t := strings.TrimSpace(b.Text); t != "" {
+				out = append(out, t)
+			}
+		case "tool_result":
+			// Anthropic tool_result content is a string or content block array.
+			out = append(out, extractContentText(b.Content)...)
+		// Deliberately skipped:
+		// "image", "image_url"  — binary, no text
+		// "audio"               — binary, no text
+		// "tool_use"            — function call schema, not user data
 		}
 	}
 	return out
 }
 
-// userQueryOrFull extracts only the text inside <user_query>...</user_query>
-// when that tag is present (Copilot's format).
-// If no user_query tag is found but the content starts with an XML tag (e.g.
-// Copilot's <context> / <editorContext> injections), it is skipped — those are
-// system-injected context, not the user's actual message.
-func userQueryOrFull(text string) []string {
-	const open, close = "<user_query>", "</user_query>"
-	if start := strings.Index(text, open); start >= 0 {
-		rest := text[start+len(open):]
-		if end := strings.Index(rest, close); end >= 0 {
-			q := strings.TrimSpace(rest[:end])
-			if q != "" {
-				return []string{q}
+// cleanTexts strips XML markup injected by tools like Copilot, collapses
+// whitespace, deduplicates, and drops blank entries.
+func cleanTexts(texts []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, t := range texts {
+		t = strings.Join(strings.Fields(xmlTagRe.ReplaceAllString(t, " ")), " ")
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+// ExtractUserQuery returns only the user's actual typed message from the current
+// turn — suitable for display in the dashboard. Unlike ExtractPrompts it does not
+// include injected file context or system instructions.
+//
+// For Copilot's XML-wrapped format, the <user_query> tag is preferred.
+// For plain OpenAI / Anthropic requests the user message text is returned as-is.
+func ExtractUserQuery(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+
+	var envelope struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Prompt string `json:"prompt"`
+		Input  string `json:"input"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return ""
+	}
+
+	// Find the last assistant message — current turn is everything after it.
+	lastAssistant := -1
+	for i := len(envelope.Messages) - 1; i >= 0; i-- {
+		if envelope.Messages[i].Role == "assistant" {
+			lastAssistant = i
+			break
+		}
+	}
+
+	var parts []string
+	for i := lastAssistant + 1; i < len(envelope.Messages); i++ {
+		if envelope.Messages[i].Role != "user" {
+			continue
+		}
+		if t := userQueryFromContent(envelope.Messages[i].Content); t != "" {
+			parts = append(parts, t)
+		}
+	}
+
+	if len(parts) == 0 {
+		if envelope.Prompt != "" {
+			return envelope.Prompt
+		}
+		return envelope.Input
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// userQueryFromContent extracts the display-worthy user text from a content field.
+// Prefers <user_query> tag (Copilot), then falls back to stripping XML.
+func userQueryFromContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return userQueryFromString(s)
+	}
+
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+
+	// First pass: if any block contains a <user_query> tag, return only that.
+	for _, b := range blocks {
+		if b.Type == "text" {
+			if t := extractUserQueryTag(b.Text); t != "" {
+				return t
 			}
 		}
 	}
-	trimmed := strings.TrimSpace(text)
-	// Skip system-injected XML blocks (start with '<').
-	if strings.HasPrefix(trimmed, "<") {
-		return nil
+
+	// No <user_query> tag found — strip XML from all blocks and join.
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" {
+			if t := strings.Join(strings.Fields(xmlTagRe.ReplaceAllString(b.Text, " ")), " "); t != "" {
+				parts = append(parts, t)
+			}
+		}
 	}
-	if trimmed != "" {
-		return []string{trimmed}
+	return strings.Join(parts, "\n\n")
+}
+
+// extractUserQueryTag returns the content of the first <user_query>…</user_query>
+// tag in s, or "" if not present.
+func extractUserQueryTag(s string) string {
+	const open, close = "<user_query>", "</user_query>"
+	if start := strings.Index(s, open); start >= 0 {
+		rest := s[start+len(open):]
+		if end := strings.Index(rest, close); end >= 0 {
+			return strings.TrimSpace(rest[:end])
+		}
 	}
-	return nil
+	return ""
+}
+
+// userQueryFromString extracts the user message from a string content field.
+// Uses <user_query> tag when present (Copilot format); otherwise strips XML tags.
+func userQueryFromString(s string) string {
+	if t := extractUserQueryTag(s); t != "" {
+		return t
+	}
+	return strings.Join(strings.Fields(xmlTagRe.ReplaceAllString(s, " ")), " ")
 }

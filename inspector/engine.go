@@ -28,6 +28,26 @@ func (e *Engine) Rules() []Rule {
 	return out
 }
 
+// AddRule appends a custom rule to the engine.
+func (e *Engine) AddRule(r Rule) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.rules = append(e.rules, r)
+}
+
+// SetSeverity updates the severity of a rule by ID. Returns false if not found.
+func (e *Engine) SetSeverity(ruleID string, sev Severity) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i, r := range e.rules {
+		if r.ID == ruleID {
+			e.rules[i].Severity = sev
+			return true
+		}
+	}
+	return false
+}
+
 // SetMode updates the mode of a rule by ID. Returns false if rule not found.
 func (e *Engine) SetMode(ruleID string, mode Mode) bool {
 	e.mu.Lock()
@@ -53,8 +73,24 @@ func (e *Engine) RedactText(text string) (string, []Match) {
 		if rule.Mode != ModeTrack {
 			continue
 		}
-		if !rule.Pattern.MatchString(result) {
+		loc := rule.Pattern.FindStringIndex(result)
+		if loc == nil {
 			continue
+		}
+		snipStart := loc[0] - 20
+		if snipStart < 0 {
+			snipStart = 0
+		}
+		snipEnd := loc[1] + 20
+		if snipEnd > len(result) {
+			snipEnd = len(result)
+		}
+		snippet := result[snipStart:snipEnd]
+		if snipStart > 0 {
+			snippet = "…" + snippet
+		}
+		if snipEnd < len(result) {
+			snippet = snippet + "…"
 		}
 		result = rule.Pattern.ReplaceAllString(result, rule.Replacement)
 		matches = append(matches, Match{
@@ -62,7 +98,7 @@ func (e *Engine) RedactText(text string) (string, []Match) {
 			RuleName: rule.Name,
 			Severity: string(rule.Severity),
 			Mode:     string(rule.Mode),
-			Snippet:  "[REDACTED]",
+			Snippet:  snippet,
 		})
 	}
 	return result, matches
