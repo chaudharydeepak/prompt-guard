@@ -158,6 +158,20 @@ func (s *Store) Stats() Stats {
 	return st
 }
 
+// ExportPrompts returns all prompts in chronological order for export.
+// Uses redacted text when available so secrets are never exported.
+func (s *Store) ExportPrompts(limit int) ([]Prompt, error) {
+	rows, err := s.db.Query(
+		`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt
+		 FROM prompts ORDER BY timestamp ASC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPrompts(rows)
+}
+
 // SetRuleMode persists a rule mode override and returns it on next load.
 func (s *Store) SetRuleMode(ruleID, mode string) error {
 	_, err := s.db.Exec(

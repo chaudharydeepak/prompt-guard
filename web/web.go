@@ -31,6 +31,9 @@ func Start(port int, db *store.Store, eng *inspector.Engine, configPath string) 
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		apiStats(w, r, db)
 	})
+	mux.HandleFunc("/api/export", func(w http.ResponseWriter, r *http.Request) {
+		apiExport(w, r, db)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, dashboardHTML)
@@ -166,6 +169,44 @@ func apiRules(w http.ResponseWriter, _ *http.Request, eng *inspector.Engine) {
 
 func apiStats(w http.ResponseWriter, _ *http.Request, db *store.Store) {
 	jsonResponse(w, db.Stats())
+}
+
+// apiExport writes all prompts as a plain-text file suitable for pasting into
+// an LLM for summarisation and pattern analysis. Secrets are never exported —
+// the redacted version is used when available.
+func apiExport(w http.ResponseWriter, _ *http.Request, db *store.Store) {
+	prompts, err := db.ExportPrompts(10000)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(
+		`attachment; filename="prompt-guard-export-%s.txt"`,
+		time.Now().Format("2006-01-02"),
+	))
+
+	stats := db.Stats()
+	fmt.Fprintf(w, "Prompt Guard Export\n")
+	fmt.Fprintf(w, "Generated: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(w, "Total prompts: %d  (clean: %d  redacted: %d  blocked: %d  flagged: %d)\n",
+		stats.Total, stats.Clean, stats.Redacted, stats.Blocked, stats.Flagged)
+	fmt.Fprintf(w, strings.Repeat("-", 72)+"\n\n")
+
+	for i, p := range prompts {
+		text := p.Prompt
+		if p.RedactedPrompt != "" {
+			text = p.RedactedPrompt
+		}
+		fmt.Fprintf(w, "[%d] %s | %s | %s\n%s\n\n",
+			i+1,
+			p.Timestamp.Format("2006-01-02 15:04"),
+			p.Host,
+			string(p.Status),
+			text,
+		)
+	}
 }
 
 func jsonResponse(w http.ResponseWriter, v any) {
@@ -407,6 +448,7 @@ var dashboardHTML = `<!DOCTYPE html>
   <div class="hd-sep"></div>
   <div class="hd-meta" id="meta">connecting…</div>
   <div class="hd-spacer"></div>
+  <a href="/api/export" download class="icon-btn" title="Export prompts for LLM analysis" style="text-decoration:none">⬇</a>
   <button class="icon-btn" onclick="toggleTheme()" title="Toggle theme" id="theme-btn">☀</button>
 </header>
 
