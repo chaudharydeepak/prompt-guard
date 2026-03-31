@@ -604,6 +604,7 @@ function modeTag(m)   { return '<span class="mm mm-'+esc(m)+'">'+esc(m)+'</span>
 
 function setFilter(f, btn) {
   currentFilter = f;
+  lastTopId = null; // force re-render for new filter
   document.querySelectorAll('.ftab').forEach(function(b){ b.classList.remove('active'); });
   btn.classList.add('active');
   refresh();
