@@ -17,6 +17,14 @@ import (
 func Start(port int, db *store.Store, eng *inspector.Engine, configPath string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/prompts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			if err := db.DeleteAllPrompts(); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		apiPrompts(w, r, db)
 	})
 	mux.HandleFunc("/api/prompts/", func(w http.ResponseWriter, r *http.Request) {
@@ -633,6 +641,10 @@ var dashboardHTML = `<!DOCTYPE html>
   <button class="icon-btn" onclick="toggleExport()" title="Export prompts" id="export-btn">
     <svg viewBox="0 0 24 24"><path d="M12 4v12m0 0-4-4m4 4 4-4M4 20h16"/></svg>
   </button>
+  <!-- Trash / clear all icon -->
+  <button class="icon-btn" onclick="clearAllPrompts()" title="Clear all prompts" id="clear-btn">
+    <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+  </button>
   <!-- Sun/moon icon swapped by JS -->
   <button class="icon-btn" onclick="toggleTheme()" title="Toggle theme" id="theme-btn">
     <svg viewBox="0 0 24 24" id="theme-icon-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
@@ -1005,6 +1017,13 @@ async function setMode(ruleID, mode, btn) {
   } finally {
     if (seg) seg.querySelectorAll('.seg-btn').forEach(function(b){ b.disabled = false; });
   }
+}
+
+async function clearAllPrompts() {
+  if (!confirm('Clear all intercepted prompts? This cannot be undone.')) return;
+  await fetch('/api/prompts', { method: 'DELETE' });
+  lastTopId = null;
+  await refresh();
 }
 
 refresh();

@@ -220,6 +220,12 @@ func (s *Store) ExportPrompts(from, to time.Time) ([]Prompt, error) {
 	return scanPrompts(rows)
 }
 
+// DeleteAllPrompts removes all intercepted prompts from the store.
+func (s *Store) DeleteAllPrompts() error {
+	_, err := s.db.Exec(`DELETE FROM prompts`)
+	return err
+}
+
 // SetRuleMode persists a rule mode override and returns it on next load.
 func (s *Store) SetRuleMode(ruleID, mode string) error {
 	_, err := s.db.Exec(

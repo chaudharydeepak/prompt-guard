@@ -86,13 +86,14 @@ func printSetup(certPath string, port, webPort int, upstreamProxy string) {
 	fmt.Println("└─────────────────────────────────────────┘")
 	fmt.Printf("\nCA cert:   %s\n\n", certPath)
 
+	fmt.Printf("Install CA (optional — only needed for browser inspection):\n")
 	switch runtime.GOOS {
 	case "darwin":
-		fmt.Printf("Install CA (run once):\n  sudo security add-trusted-cert -d -r trustRoot \\\n    -k /Library/Keychains/System.keychain %s\n\n", certPath)
+		fmt.Printf("  sudo security add-trusted-cert -d -r trustRoot \\\n    -k /Library/Keychains/System.keychain %s\n\n", certPath)
 	case "linux":
-		fmt.Printf("Install CA (run once):\n  sudo cp %s /usr/local/share/ca-certificates/prompt-guard.crt\n  sudo update-ca-certificates\n\n", certPath)
+		fmt.Printf("  sudo cp %s /usr/local/share/ca-certificates/prompt-guard.crt\n  sudo update-ca-certificates\n\n", certPath)
 	case "windows":
-		fmt.Printf("Install CA (run once):\n  certutil -addstore -f ROOT %s\n\n", certPath)
+		fmt.Printf("  certutil -addstore -f ROOT %s\n\n", certPath)
 	}
 
 	switch runtime.GOOS {

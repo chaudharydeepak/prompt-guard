@@ -14,7 +14,7 @@ AI tools like GitHub Copilot, ChatGPT, and Claude receive your full editor conte
 
 ## Features
 
-- **HTTPS MITM proxy** — transparent interception using a local CA cert
+- **HTTPS MITM proxy** — transparent interception; CA cert optional (required only for browser inspection)
 - **Real-time inspection** — rules run on every prompt before it's forwarded
 - **Block mode** — request is rejected; the AI receives a "blocked" message instead
 - **Redact mode** — sensitive value is replaced with `[REDACTED]` before forwarding; the AI still responds
@@ -83,7 +83,7 @@ On first run a local CA cert is generated and setup instructions are printed:
 
 CA cert:   /Users/you/.prompt-guard/ca.crt
 
-Install CA (run once):
+Install CA (optional — only needed for browser inspection):
   sudo security add-trusted-cert -d -r trustRoot \
     -k /Library/Keychains/System.keychain ~/.prompt-guard/ca.crt
 
@@ -96,23 +96,13 @@ Dashboard:  http://localhost:7778
 Rules file: /Users/you/.prompt-guard/rules.json
 ```
 
-### Using with VS Code Copilot
+The CA cert is **not required** for CLI tools or IDE extensions — they trust the proxy automatically when the `HTTP_PROXY`/`HTTPS_PROXY` environment variables are set. Only install the cert if you want to route traffic from a browser or other tool that does its own TLS certificate verification.
 
-The most reliable way is to set the proxy directly in VS Code settings (`Cmd+,`):
+### Using with Claude CLI / Claude Code
 
-```json
-"http.proxy": "http://localhost:8080",
-"http.proxyStrictSSL": true
-```
-
-Then restart VS Code. Traffic from all Copilot models (Claude, GPT-4o, etc.) will flow through the proxy.
-
-### Using with Claude CLI
-
-Node.js ignores the system keychain, so pass the CA cert explicitly:
+Just set the proxy environment variables:
 
 ```bash
-export NODE_EXTRA_CA_CERTS=~/.prompt-guard/ca.crt
 export HTTP_PROXY=http://localhost:8080
 export HTTPS_PROXY=http://localhost:8080
 export NO_PROXY=localhost,127.0.0.1
@@ -120,6 +110,17 @@ claude
 ```
 
 To avoid setting these every session, add them to your `~/.zshrc` (or `~/.bashrc`).
+
+### Using with VS Code Copilot
+
+Set the proxy directly in VS Code settings (`Cmd+,`):
+
+```json
+"http.proxy": "http://localhost:8080",
+"http.proxyStrictSSL": false
+```
+
+Then restart VS Code. Traffic from all Copilot models will flow through the proxy.
 
 
 ## Customizing Rules
@@ -190,7 +191,7 @@ Your app (VS Code, curl, etc.)
     → prompt-guard proxy (:8080)
       ├── Non-target hosts → blind tunnel (unchanged)
       └── Target hosts (OpenAI, Anthropic, Copilot)
-            → TLS MITM (local CA cert)
+            → TLS MITM (local CA; cert install optional)
               → parse JSON body → extract user prompt text
                 → run rules
                   ├── block match  → reject request; return block message to client
