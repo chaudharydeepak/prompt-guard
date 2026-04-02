@@ -37,6 +37,7 @@ var targetSuffixes = []string{
 	".githubcopilot.com",
 	".openai.com",
 	".anthropic.com",
+	"claude.ai",
 }
 
 func isTarget(hostport string) bool {
@@ -145,7 +146,23 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 			req.Body = io.NopCloser(bytes.NewReader(body))
 		}
 
-		debugf("REQUEST: %s %s%s body=%d bytes stream=%v", req.Method, stripPort(hostport), req.URL.Path, len(body), IsStreaming(body))
+		debugf("REQUEST: %s %s%s body=%d bytes stream=%v accept=%s", req.Method, stripPort(hostport), req.URL.Path, len(body), IsStreaming(body), req.Header.Get("Accept"))
+
+		// Detect and store telemetry/analytics payloads separately.
+		if isTelemetry(body) {
+			_, summary := extractTelemetryInfo(body)
+			debugf("TELEMETRY: %s", summary)
+			p.db.SavePrompt(store.Prompt{
+				Timestamp: time.Now(),
+				Host:      stripPort(hostport),
+				Path:      req.URL.Path,
+				Prompt:    summary,
+				Status:    store.StatusTelemetry,
+			})
+			p.forward(tlsClient, req, hostport)
+			continue
+		}
+
 		prompts := ExtractPrompts(body)
 		displayPrompt := ExtractUserQuery(body)
 		debugf("EXTRACTED: %d prompt(s)", len(prompts))
@@ -176,7 +193,11 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 		allowBlock := !isCopilotBackground(body)
 
 		if blocked, msg := p.inspectAndStore(req, hostport, combined, redactedCombined, displayPrompt, redactions, allowBlock); blocked {
-			writeBlockedResponse(tlsClient, msg, IsStreaming(body), req.URL.Path)
+			if strings.Contains(stripPort(hostport), "claude.ai") {
+				writeHTTPError(tlsClient, 400, msg)
+			} else {
+				writeBlockedResponse(tlsClient, msg, IsStreaming(body), req.URL.Path)
+			}
 			return
 		}
 
@@ -278,6 +299,72 @@ func (p *proxy) forward(dst net.Conn, req *http.Request, hostport string) error 
 	return resp.Write(dst)
 }
 
+// isTelemetry reports whether the body is an analytics/telemetry payload
+// (Segment, Amplitude, Datadog RUM, etc.) rather than an AI prompt.
+func isTelemetry(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var env struct {
+		WriteKey string        `json:"writeKey"`
+		Batch    []interface{} `json:"batch"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return false
+	}
+	return env.WriteKey != "" && len(env.Batch) > 0
+}
+
+// extractTelemetryInfo pulls event names and PII fields from a Segment batch payload.
+func extractTelemetryInfo(body []byte) (events []string, summary string) {
+	var env struct {
+		WriteKey string `json:"writeKey"`
+		Batch    []struct {
+			Event      string                 `json:"event"`
+			Type       string                 `json:"type"`
+			Properties map[string]interface{} `json:"properties"`
+			Context    struct {
+				Traits map[string]interface{} `json:"traits"`
+			} `json:"context"`
+		} `json:"batch"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, ""
+	}
+
+	seen := map[string]bool{}
+	var piiFields []string
+	piiKeys := []string{"email", "userId", "user_id", "anonymousId", "ip", "phone", "name"}
+
+	for _, item := range env.Batch {
+		if item.Event != "" && !seen[item.Event] {
+			events = append(events, item.Event)
+			seen[item.Event] = true
+		}
+		// Check traits for PII
+		for _, key := range piiKeys {
+			if v, ok := item.Context.Traits[key]; ok && v != "" && v != nil {
+				found := false
+				for _, f := range piiFields {
+					if f == key {
+						found = true
+						break
+					}
+				}
+				if !found {
+					piiFields = append(piiFields, key)
+				}
+			}
+		}
+	}
+
+	parts := []string{"Events: " + strings.Join(events, ", ")}
+	if len(piiFields) > 0 {
+		parts = append(parts, "PII fields: "+strings.Join(piiFields, ", "))
+	}
+	return events, strings.Join(parts, " | ")
+}
+
 // isCopilotBackground reports whether the request body is a Copilot-internal
 // background call (title generation, summarization, progress messages).
 // These requests contain full conversation history and their responses appear
@@ -370,6 +457,15 @@ func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombi
 	}
 	msg += "\nThis request was **not forwarded** to the AI. Please remove the sensitive data and try again."
 	return true, msg
+}
+
+// writeHTTPError writes a plain HTTP error response for non-API clients (e.g. claude.ai web).
+func writeHTTPError(conn net.Conn, code int, msg string) {
+	b, _ := json.Marshal(struct {
+		Error string `json:"error"`
+	}{Error: msg})
+	fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		code, http.StatusText(code), len(b), b)
 }
 
 // writeBlockedResponse returns a well-formed response so the client renders

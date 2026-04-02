@@ -12,10 +12,11 @@ import (
 type Status string
 
 const (
-	StatusClean    Status = "clean"
-	StatusFlagged  Status = "flagged"
-	StatusRedacted Status = "redacted"
-	StatusBlocked  Status = "blocked"
+	StatusClean     Status = "clean"
+	StatusFlagged   Status = "flagged"
+	StatusRedacted  Status = "redacted"
+	StatusBlocked   Status = "blocked"
+	StatusTelemetry Status = "telemetry"
 )
 
 // Prompt is an intercepted prompt with its inspection outcome.
@@ -153,6 +154,7 @@ type Stats struct {
 	Flagged         int    `json:"flagged"`
 	Redacted        int    `json:"redacted"`
 	Blocked         int    `json:"blocked"`
+	Telemetry       int    `json:"telemetry"`
 	MostFlaggedHost string `json:"most_flagged_host"`
 }
 
@@ -163,8 +165,9 @@ func (s *Store) Stats() Stats {
 	s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status='flagged'`).Scan(&st.Flagged)
 	s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status='redacted'`).Scan(&st.Redacted)
 	s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status='blocked'`).Scan(&st.Blocked)
+	s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status='telemetry'`).Scan(&st.Telemetry)
 	s.db.QueryRow(
-		`SELECT host FROM prompts WHERE status!='clean' GROUP BY host ORDER BY COUNT(*) DESC LIMIT 1`,
+		`SELECT host FROM prompts WHERE status!='clean' AND status!='telemetry' GROUP BY host ORDER BY COUNT(*) DESC LIMIT 1`,
 	).Scan(&st.MostFlaggedHost)
 	return st
 }

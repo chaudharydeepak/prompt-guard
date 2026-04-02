@@ -399,11 +399,12 @@ var dashboardHTML = `<!DOCTYPE html>
 
   /* ── Layout ────────────────────────────────────── */
   .pg-main { padding: 18px 20px; max-width: 1280px; margin: 0 auto; }
-  .pg-cols { display: grid; grid-template-columns: 1fr 290px; gap: 14px; align-items: start; }
+  .pg-cols { display: grid; grid-template-columns: 1fr 320px; gap: 14px; align-items: start; }
   @media(max-width:880px) { .pg-cols { grid-template-columns: 1fr; } }
 
   /* ── Metric tiles ──────────────────────────────── */
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap: 10px; margin-bottom: 16px; }
+  .tiles { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; margin-bottom: 16px; }
+  @media(max-width:900px) { .tiles { grid-template-columns: repeat(4, 1fr); } }
   .tile { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 10px; padding: 13px 15px;
           position: relative; overflow: hidden; }
   .tile::before { content:''; position:absolute; top:0;left:0;right:0; height:2px; }
@@ -414,7 +415,7 @@ var dashboardHTML = `<!DOCTYPE html>
   .tile-blocked::before{ background: linear-gradient(90deg,var(--danger),transparent); }
   .tile-host::before   { background: linear-gradient(90deg,var(--text-3),transparent); }
   .tile-lbl { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--text-3); margin-bottom: 7px; }
-  .tile-val { font-size: 27px; font-weight: 700; line-height: 1; color: var(--text-1); }
+  .tile-val { font-size: 24px; font-weight: 700; line-height: 1; color: var(--text-1); }
   .tile-val.c-total   { color: var(--text-1); }
   .tile-val.c-clean   { color: var(--success); }
   .tile-val.c-flagged { color: var(--warning); }
@@ -438,6 +439,12 @@ var dashboardHTML = `<!DOCTYPE html>
   .ftab:hover { color: var(--text-1); }
   .ftab.active { background: var(--bg-surface); color: var(--text-1);
                  box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+
+  /* ── Scrollbars ─────────────────────────────────── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
 
   /* ── Table ─────────────────────────────────────── */
   .tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -496,7 +503,8 @@ var dashboardHTML = `<!DOCTYPE html>
   .tag-blocked  { background: var(--danger-dim);  color: var(--danger);  border: 1px solid rgba(239,68,68,.3); }
   .tag-flagged  { background: var(--warning-dim); color: var(--warning); border: 1px solid rgba(245,158,11,.3); }
   .tag-redacted { background: var(--purple-dim);  color: var(--purple);  border: 1px solid rgba(167,139,250,.3); }
-  .tag-clean    { background: var(--success-dim); color: var(--success); border: 1px solid rgba(16,185,129,.25); }
+  .tag-clean      { background: var(--success-dim); color: var(--success); border: 1px solid rgba(16,185,129,.25); }
+  .tag-telemetry  { background: rgba(100,116,139,.15); color: #94a3b8; border: 1px solid rgba(100,116,139,.25); }
   .mm { font-size: 9.5px; font-weight: 700; text-transform: uppercase; padding: 1px 5px; border-radius: 3px; }
   .mm-block { background: var(--danger-dim);  color: var(--danger); }
   .mm-track { background: var(--accent-dim);  color: var(--accent); }
@@ -599,9 +607,14 @@ var dashboardHTML = `<!DOCTYPE html>
       <div class="tile-sub">stopped at proxy</div>
     </div>
     <div class="tile tile-host">
+      <div class="tile-lbl">Telemetry</div>
+      <div class="tile-val" id="tile-telemetry" style="color:var(--text-2);font-size:22px">—</div>
+      <div class="tile-sub">analytics calls</div>
+    </div>
+    <div class="tile tile-host">
       <div class="tile-lbl">Top Host</div>
-      <div class="tile-host-val" id="tile-host">—</div>
-      <div class="tile-sub">most hits</div>
+      <div class="tile-host-val" id="tile-host" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</div>
+      <div class="tile-sub">most flagged</div>
     </div>
   </div>
 
@@ -650,13 +663,13 @@ var dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <!-- Rules panel -->
-    <div>
+    <div style="position:sticky;top:52px">
       <div class="panel">
         <div class="panel-hd">
           <span class="panel-title">Detection Rules</span>
           <span class="panel-count" id="rules-count">0</span>
         </div>
-        <div id="rules-list"></div>
+        <div id="rules-list" style="max-height:calc(100vh - 130px);overflow-y:auto"></div>
       </div>
     </div>
   </div>
@@ -785,8 +798,9 @@ async function refresh() {
     document.getElementById('tile-clean').textContent    = stats.clean    || 0;
     document.getElementById('tile-flagged').textContent  = stats.flagged  || 0;
     document.getElementById('tile-redacted').textContent = stats.redacted || 0;
-    document.getElementById('tile-blocked').textContent  = stats.blocked  || 0;
-    document.getElementById('tile-host').textContent     = stats.most_flagged_host || '—';
+    document.getElementById('tile-blocked').textContent    = stats.blocked   || 0;
+    document.getElementById('tile-telemetry').textContent = stats.telemetry || 0;
+    document.getElementById('tile-host').textContent      = stats.most_flagged_host || '—';
     document.getElementById('prompt-count').textContent  = total;
 
     // Pagination controls
@@ -808,11 +822,12 @@ async function refresh() {
       ? '<tr class="empty"><td colspan="5">No prompts'+(currentFilter !== 'all' ? ' matching "'+currentFilter+'"' : '')+'</td></tr>'
       : prompts.map(function(p) {
           var rulesStr = (p.rules||[]).join(', ') || '—';
+          var shortPath = p.path.replace(/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '/…');
           return '<tr id="row-'+p.id+'" class="row-'+p.status+'" onclick="toggleDetail('+p.id+')">' +
             '<td class="mono muted">'+esc(p.time)+'</td>' +
             '<td>'+statusTag(p.status)+'</td>' +
-            '<td style="font-weight:600">'+esc(p.host)+'</td>' +
-            '<td class="mono muted">'+esc(p.path)+'</td>' +
+            '<td style="font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(p.host)+'">'+esc(p.host)+'</td>' +
+            '<td class="mono muted" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(p.path)+'">'+esc(shortPath)+'</td>' +
             '<td style="color:var(--text-2)">'+esc(rulesStr)+'</td>' +
             '</tr>';
         }).join('');
