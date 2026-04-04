@@ -108,6 +108,9 @@ func apiPrompts(w http.ResponseWriter, r *http.Request, db *store.Store) {
 		RedactedPrompt string            `json:"redacted_prompt,omitempty"`
 		DurationMS     int64             `json:"duration_ms"`
 		AgentMode      bool              `json:"agent_mode"`
+		InputTokens    int               `json:"input_tokens"`
+		OutputTokens   int               `json:"output_tokens"`
+		SessionID      string            `json:"session_id"`
 	}
 	out := make([]row, 0, len(prompts))
 	for _, p := range prompts {
@@ -136,6 +139,9 @@ func apiPrompts(w http.ResponseWriter, r *http.Request, db *store.Store) {
 			RedactedPrompt: truncate(p.RedactedPrompt, 400),
 			DurationMS:     p.DurationMS,
 			AgentMode:      p.AgentMode,
+			InputTokens:    p.InputTokens,
+			OutputTokens:   p.OutputTokens,
+			SessionID:      p.SessionID,
 		})
 	}
 	type response struct {
@@ -743,8 +749,12 @@ var dashboardHTML = `<!DOCTYPE html>
       <div class="tile-host-val" id="tile-host">—</div>
       <div class="tile-sub">most flagged</div>
     </div>
+    <div class="tile tile-tokens">
+      <div class="tile-lbl">Tokens</div>
+      <div class="tile-val" id="tile-tokens">—</div>
+      <div class="tile-sub">output generated</div>
+    </div>
   </div>
-
   <div class="pg-cols">
     <!-- Prompts table -->
     <div>
@@ -771,10 +781,12 @@ var dashboardHTML = `<!DOCTYPE html>
                 <th>Path</th>
                 <th>Rules Hit</th>
                 <th>Latency</th>
+                <th>Out Tokens</th>
+                <th>Session</th>
               </tr>
             </thead>
             <tbody id="prompts-body">
-              <tr class="empty"><td colspan="6">No prompts intercepted yet</td></tr>
+              <tr class="empty"><td colspan="8">No prompts intercepted yet</td></tr>
             </tbody>
           </table>
         </div>
@@ -827,6 +839,12 @@ function updateThemeIcon(t) {
   moon.style.display = t === 'light' ? '' : 'none';
 }
 (function(){ updateThemeIcon(document.documentElement.getAttribute('data-theme')); })();
+
+function fmtTokens(n) {
+  if (n >= 1000000) return (n/1000000).toFixed(1)+'M';
+  if (n >= 1000)    return (n/1000).toFixed(1)+'K';
+  return String(n);
+}
 
 function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -905,8 +923,16 @@ function toggleDetail(id) {
   var detail = document.createElement('tr');
   detail.id = 'detail-'+id;
   detail.className = 'detail-row';
-  detail.innerHTML = '<td colspan="6"><div class="detail-inner">' +
-    banner + promptSection +
+  var tokenInfo = '';
+  if (p.input_tokens || p.output_tokens) {
+    tokenInfo = '<div style="font-size:11px;color:var(--text-3);margin-top:8px">'+
+      'Context sent: <span style="color:var(--text-2)">'+fmtTokens(p.input_tokens||0)+'</span> tokens &nbsp;·&nbsp; '+
+      'Response: <span style="color:var(--text-2)">'+fmtTokens(p.output_tokens||0)+'</span> tokens'+
+      '</div>';
+  }
+
+  detail.innerHTML = '<td colspan="8"><div class="detail-inner">' +
+    banner + promptSection + tokenInfo +
     '<div class="detail-section-lbl" style="margin-top:10px;margin-bottom:6px">Matched Rules</div>' +
     '<div class="match-list">'+matchHTML+'</div>' +
     '</div></td>';
@@ -935,8 +961,9 @@ async function refresh() {
     document.getElementById('tile-blocked').textContent    = stats.blocked   || 0;
     document.getElementById('tile-telemetry').textContent = stats.telemetry || 0;
     document.getElementById('tile-host').textContent      = stats.most_flagged_host || '—';
+    var outTok = stats.total_output_tokens||0;
+    document.getElementById('tile-tokens').textContent = outTok > 0 ? fmtTokens(outTok) : '—';
     document.getElementById('prompt-count').textContent  = total;
-
     // Alert state: glow the blocked tile when there are active blocks; same for flagged
     var blockedTile = document.querySelector('.tile-blocked');
     var flaggedTile = document.querySelector('.tile-flagged');
@@ -989,6 +1016,10 @@ async function refresh() {
                 : p.duration_ms+'ms')
             : '<span style="color:var(--text-3)">—</span>';
           var agentBadge = p.agent_mode ? '<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#f59e0b;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:4px;padding:1px 5px;">agent</span>' : '';
+          var sid = p.session_id || '';
+          var sessionCell = sid
+            ? '<td class="mono muted" title="'+esc(sid)+'" style="white-space:nowrap;font-size:11px">'+esc(sid.slice(0,8))+'</td>'
+            : '<td class="mono muted" style="color:var(--text-3)">—</td>';
           return '<tr id="row-'+p.id+'" class="row-'+p.status+'" onclick="toggleDetail('+p.id+')">' +
             '<td class="mono muted">'+esc(p.time)+'</td>' +
             '<td>'+statusTag(p.status)+agentBadge+'</td>' +
@@ -996,6 +1027,8 @@ async function refresh() {
             '<td class="mono muted" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(p.path)+'">'+esc(shortPath)+'</td>' +
             '<td>'+rulesHTML+'</td>' +
             '<td class="mono muted" style="text-align:right;white-space:nowrap">'+dur+'</td>' +
+            '<td class="mono muted" style="text-align:right;white-space:nowrap">'+(p.output_tokens ? fmtTokens(p.output_tokens) : '—')+'</td>' +
+            sessionCell +
             '</tr>';
         }).join('');
 

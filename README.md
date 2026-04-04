@@ -24,7 +24,7 @@ The risk is well-documented:
 
 - **HTTPS MITM proxy** — transparent interception; CA cert optional (required only for browser inspection)
 - **Real-time inspection** — rules run on every prompt before it's forwarded
-- **Block mode** — request is rejected; the AI receives a "blocked" message instead
+- **Block mode** — request is rejected; the AI receives a "blocked" message instead. Because the prompt is never forwarded, the sensitive data leaves no trace in the model's context — even across a long-running session
 - **Redact mode** — sensitive value is replaced with `[REDACTED]` before forwarding; the AI still responds
 - **Web dashboard** — live feed of all intercepted prompts with matched snippets and status
 - **12 built-in rules** — credentials, PII, tokens, private keys

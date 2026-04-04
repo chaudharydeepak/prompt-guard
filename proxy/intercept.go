@@ -251,6 +251,78 @@ func extractUserQueryTag(s string) string {
 	return ""
 }
 
+// ExtractUsage parses input/output token counts from a response body.
+// Handles Anthropic and OpenAI formats for both plain JSON and SSE streams.
+func ExtractUsage(body []byte) (inputTokens, outputTokens int) {
+	type usageBlock struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		PromptTokens             int `json:"prompt_tokens"`
+		CompletionTokens         int `json:"completion_tokens"`
+	}
+	type lineShape struct {
+		Usage   *usageBlock `json:"usage"`
+		Message *struct {
+			Usage *usageBlock `json:"usage"`
+		} `json:"message"`
+	}
+
+	// Scan each line — works for both plain JSON and SSE (data: {...}).
+	// Fresh struct per line so stale pointer fields from prior iterations don't bleed through.
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimPrefix(strings.TrimSpace(line), "data: ")
+		if line == "" || line == "[DONE]" {
+			continue
+		}
+		var s lineShape
+		if err := json.Unmarshal([]byte(line), &s); err != nil {
+			continue
+		}
+		// Anthropic message_start: usage nested under message
+		if s.Message != nil && s.Message.Usage != nil {
+			u := s.Message.Usage
+			if total := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens; total > inputTokens {
+				inputTokens = total
+			}
+		}
+		if s.Usage != nil {
+			u := s.Usage
+			// Anthropic top-level usage (message_delta has output_tokens; non-streaming has both)
+			if total := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens; total > inputTokens {
+				inputTokens = total
+			}
+			if u.OutputTokens > outputTokens {
+				outputTokens = u.OutputTokens
+			}
+			// OpenAI / Copilot
+			if u.PromptTokens > inputTokens {
+				inputTokens = u.PromptTokens
+			}
+			if u.CompletionTokens > outputTokens {
+				outputTokens = u.CompletionTokens
+			}
+		}
+	}
+	return
+}
+
+// ExtractClaudeSessionID parses the Claude Code session ID from an event_logging batch payload.
+func ExtractClaudeSessionID(body []byte) string {
+	var env struct {
+		Events []struct {
+			EventData struct {
+				SessionID string `json:"session_id"`
+			} `json:"event_data"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil || len(env.Events) == 0 {
+		return ""
+	}
+	return env.Events[0].EventData.SessionID
+}
+
 // userQueryFromString extracts the user message from a string content field.
 // Uses <user_query> tag when present (Copilot format); otherwise strips XML tags.
 func userQueryFromString(s string) string {

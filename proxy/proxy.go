@@ -54,16 +54,17 @@ func isTarget(hostport string) bool {
 }
 
 type proxy struct {
-	ca            *CA
-	db            *store.Store
-	eng           *inspector.Engine
-	upstreamProxy string // optional: "http://host:port" or "http://user:pass@host:port"
+	ca               *CA
+	db               *store.Store
+	eng              *inspector.Engine
+	upstreamProxy    string // optional: "http://host:port" or "http://user:pass@host:port"
+	currentSessionID string
 }
 
 // Start runs the HTTP proxy on the given port. Blocks until error.
 // upstreamProxy is optional — set to route outbound traffic through a corporate proxy.
 func Start(port int, ca *CA, db *store.Store, eng *inspector.Engine, upstreamProxy string) error {
-	p := &proxy{ca: ca, db: db, eng: eng, upstreamProxy: upstreamProxy}
+	p := &proxy{ca: ca, db: db, eng: eng, upstreamProxy: upstreamProxy, currentSessionID: db.GetSetting("current_session_id", "")}
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
 		Handler: p,
@@ -148,6 +149,15 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 
 		debugf("REQUEST: %s %s%s body=%d bytes stream=%v accept=%s", req.Method, stripPort(hostport), req.URL.Path, len(body), IsStreaming(body), req.Header.Get("Accept"))
 
+		// Extract Claude Code session ID from event_logging requests.
+		if strings.Contains(req.URL.Path, "/event_logging") {
+			if sid := ExtractClaudeSessionID(body); sid != "" {
+				p.currentSessionID = sid
+				p.db.SetSetting("current_session_id", sid)
+				debugf("SESSION: %s", sid)
+			}
+		}
+
 		// Detect and store telemetry/analytics payloads separately.
 		if isTelemetry(body) {
 			_, summary := extractTelemetryInfo(body)
@@ -204,12 +214,15 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 
 		// Forward to real upstream and pipe response back.
 		// Measure TTFB (request sent → response headers received) and persist it.
-		ttfb, err := p.forward(tlsClient, req, hostport)
-		if err != nil {
-			return
-		}
+		ttfb, inTok, outTok, err := p.forward(tlsClient, req, hostport)
 		if savedID > 0 {
 			p.db.UpdateDuration(savedID, ttfb.Milliseconds())
+			if inTok > 0 || outTok > 0 {
+				p.db.UpdateTokens(savedID, inTok, outTok)
+			}
+		}
+		if err != nil {
+			return
 		}
 	}
 }
@@ -267,8 +280,8 @@ func (p *proxy) dialUpstream(hostport string) (net.Conn, error) {
 }
 
 // forward dials the real upstream, sends the request, and writes the response back to dst.
-// Returns the time-to-first-byte (request sent → response headers received).
-func (p *proxy) forward(dst net.Conn, req *http.Request, hostport string) (time.Duration, error) {
+// Returns the time-to-first-byte and token usage parsed from the response.
+func (p *proxy) forward(dst net.Conn, req *http.Request, hostport string) (time.Duration, int, int, error) {
 	hostname := hostport
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
 		hostname = h
@@ -276,7 +289,7 @@ func (p *proxy) forward(dst net.Conn, req *http.Request, hostport string) (time.
 
 	tcpConn, err := p.dialUpstream(hostport)
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
 	up := tls.Client(tcpConn, &tls.Config{
 		ServerName: hostname,
@@ -284,28 +297,43 @@ func (p *proxy) forward(dst net.Conn, req *http.Request, hostport string) (time.
 	})
 	if err := up.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
 		tcpConn.Close()
-		return 0, err
+		return 0, 0, 0, err
 	}
 	if err := up.Handshake(); err != nil {
 		tcpConn.Close()
-		return 0, err
+		return 0, 0, 0, err
 	}
 	up.SetDeadline(time.Time{})
 	defer up.Close()
 
+	// Remove Accept-Encoding so upstream responds with plain text.
+	// This lets our TeeReader capture readable SSE for token parsing.
+	req.Header.Del("Accept-Encoding")
+
 	start := time.Now()
 	if err := req.Write(up); err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
 
 	resp, err := http.ReadResponse(bufio.NewReader(up), req)
 	ttfb := time.Since(start)
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
 	defer resp.Body.Close()
 
-	return ttfb, resp.Write(dst)
+	// Tee response body to capture usage without blocking the stream.
+	var buf bytes.Buffer
+	resp.Body = io.NopCloser(io.TeeReader(resp.Body, &buf))
+	writeErr := resp.Write(dst)
+	// If the client closed early, drain remaining upstream bytes so we still
+	// capture the final message_delta event that carries the usage counts.
+	if writeErr != nil {
+		io.Copy(io.Discard, resp.Body)
+	}
+	in, out := ExtractUsage(buf.Bytes())
+	debugf("USAGE: input=%d output=%d", in, out)
+	return ttfb, in, out, writeErr
 }
 
 // isTelemetry reports whether the body is an analytics/telemetry payload
@@ -440,6 +468,7 @@ func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombi
 		Status:         status,
 		Matches:        allMatches,
 		AgentMode:      p.eng.AgentMode(),
+		SessionID:      p.currentSessionID,
 	})
 	if err != nil {
 		log.Printf("store ERROR: %v", err)
