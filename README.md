@@ -26,7 +26,9 @@ The risk is well-documented:
 - **Real-time inspection** — rules run on every prompt before it's forwarded
 - **Block mode** — request is rejected; the AI receives a "blocked" message instead. Because the prompt is never forwarded, the sensitive data leaves no trace in the model's context — even across a long-running session
 - **Redact mode** — sensitive value is replaced with `[REDACTED]` before forwarding; the AI still responds
-- **Web dashboard** — live feed of all intercepted prompts with matched snippets and status
+- **Web dashboard** — live feed of all intercepted prompts with matched snippets, status, token usage, session ID, and client identity
+
+![Prompt Guard Dashboard](dashboard.png)
 - **12 built-in rules** — credentials, PII, tokens, private keys
 - **Live rule editing** — change rule modes in the dashboard; changes are written back to `rules.json` instantly
 - **Agent mode** — one-click toggle to switch all rules to redact so long-running agents are never hard-blocked; state persists across restarts; each request tagged in the dashboard
