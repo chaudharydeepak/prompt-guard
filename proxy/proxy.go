@@ -148,26 +148,38 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 
 		debugf("REQUEST: %s %s%s body=%d bytes stream=%v accept=%s", req.Method, stripPort(hostport), req.URL.Path, len(body), IsStreaming(body), req.Header.Get("Accept"))
 		if Debug {
-			for _, h := range []string{"X-Request-Id", "Vscode-Sessionid", "Vscode-Machineid", "X-Github-Api-Version", "X-Client-Session-Id"} {
+			for _, h := range []string{"X-Request-Id", "Vscode-Sessionid", "Vscode-Machineid", "X-Github-Api-Version", "X-Client-Session-Id", "User-Agent", "Copilot-Integration-Id"} {
 				if v := req.Header.Get(h); v != "" {
 					debugf("  HEADER %s: %s", h, v)
 				}
 			}
 		}
 
-		// Session ID: extract per-request from known locations.
+		// Session ID + client: extract per-request from known locations.
 		// Copilot VSCode extension: Vscode-Sessionid header.
-		// Copilot CLI: X-Client-Session-Id header.
-		// Claude Code: metadata.user_id JSON field in the request body.
-		sessionID := req.Header.Get("Vscode-Sessionid")
-		if sessionID != "" {
-			debugf("SESSION (copilot-vscode): %s", sessionID)
+		// Copilot CLI: X-Client-Session-Id header; Copilot-Integration-Id names the client.
+		// Claude Code: metadata.user_id JSON field; User-Agent names the client.
+		// All others: first token of User-Agent as best-effort client name.
+		var sessionID, client string
+		if sid := req.Header.Get("Vscode-Sessionid"); sid != "" {
+			sessionID = sid
+			client = req.Header.Get("User-Agent")
+			debugf("SESSION (copilot-vscode): %s", sid)
 		} else if sid := req.Header.Get("X-Client-Session-Id"); sid != "" {
 			sessionID = sid
+			client = req.Header.Get("Copilot-Integration-Id")
+			if client == "" {
+				client = req.Header.Get("User-Agent")
+			}
 			debugf("SESSION (copilot-cli): %s", sid)
 		} else if sid := ExtractAnthropicSessionID(body); sid != "" {
 			sessionID = sid
+			client = req.Header.Get("User-Agent")
 			debugf("SESSION (claude): %s", sid)
+		}
+		// Trim client to first space-delimited token to keep it short.
+		if i := strings.IndexByte(client, ' '); i > 0 {
+			client = client[:i]
 		}
 
 		// Detect and store telemetry/analytics payloads separately.
@@ -214,7 +226,7 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 		// inspect and redact them; we just don't terminate the connection.
 		allowBlock := !isCopilotBackground(body)
 
-		blocked, msg, savedID := p.inspectAndStore(req, hostport, combined, redactedCombined, displayPrompt, redactions, allowBlock, sessionID)
+		blocked, msg, savedID := p.inspectAndStore(req, hostport, combined, redactedCombined, displayPrompt, redactions, allowBlock, sessionID, client)
 		if blocked {
 			if strings.Contains(stripPort(hostport), "claude.ai") {
 				writeHTTPError(tlsClient, 400, msg)
@@ -443,7 +455,7 @@ func isCopilotBackground(body []byte) bool {
 // redactions are track-mode matches already applied to the forwarded body.
 // allowBlock: if false, block-mode rules are recorded but the request is not terminated.
 // Returns (blocked, assistantMessage, savedRowID). savedRowID is 0 if nothing was stored.
-func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombined, displayPrompt string, redactions []inspector.Match, allowBlock bool, sessionID string) (bool, string, int64) {
+func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombined, displayPrompt string, redactions []inspector.Match, allowBlock bool, sessionID, client string) (bool, string, int64) {
 	if combined == "" && len(redactions) == 0 {
 		return false, "", 0
 	}
@@ -481,6 +493,7 @@ func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombi
 		Matches:        allMatches,
 		AgentMode:      p.eng.AgentMode(),
 		SessionID:      sessionID,
+		Client:         client,
 	})
 	if err != nil {
 		log.Printf("store ERROR: %v", err)

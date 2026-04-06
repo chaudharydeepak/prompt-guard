@@ -111,6 +111,7 @@ func apiPrompts(w http.ResponseWriter, r *http.Request, db *store.Store) {
 		InputTokens    int               `json:"input_tokens"`
 		OutputTokens   int               `json:"output_tokens"`
 		SessionID      string            `json:"session_id"`
+		Client         string            `json:"client"`
 	}
 	out := make([]row, 0, len(prompts))
 	for _, p := range prompts {
@@ -142,6 +143,7 @@ func apiPrompts(w http.ResponseWriter, r *http.Request, db *store.Store) {
 			InputTokens:    p.InputTokens,
 			OutputTokens:   p.OutputTokens,
 			SessionID:      p.SessionID,
+			Client:         p.Client,
 		})
 	}
 	type response struct {
@@ -451,7 +453,7 @@ var dashboardHTML = `<!DOCTYPE html>
 
   /* ── Layout ────────────────────────────────────── */
   .pg-main { padding: 18px 24px; max-width: 100%; margin: 0 auto; }
-  .pg-cols { display: grid; grid-template-columns: 1fr 380px; gap: 16px; align-items: start; }
+  .pg-cols { display: grid; grid-template-columns: 1fr 300px; gap: 16px; align-items: start; }
   @media(max-width:880px) { .pg-cols { grid-template-columns: 1fr; } }
 
   /* ── Metric tiles ──────────────────────────────── */
@@ -529,14 +531,15 @@ var dashboardHTML = `<!DOCTYPE html>
   /* ── Table ─────────────────────────────────────── */
   .tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; min-height: 320px; }
   .pg-tbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  .pg-tbl th:nth-child(1) { width: 130px; }  /* Time */
-  .pg-tbl th:nth-child(2) { width: 90px; }   /* Status */
-  .pg-tbl th:nth-child(3) { width: 160px; }  /* Host */
-  .pg-tbl th:nth-child(4) { width: 130px; }  /* Path */
-  .pg-tbl th:nth-child(5) { width: 160px; }  /* Rules Hit */
-  .pg-tbl th:nth-child(6) { width: 70px; }   /* Latency */
-  .pg-tbl th:nth-child(7) { width: 140px; }  /* Tokens in/out */
-  .pg-tbl th:nth-child(8) { width: 90px; }   /* Session */
+  .pg-tbl th:nth-child(1) { width: 110px; }  /* Time */
+  .pg-tbl th:nth-child(2) { width: 85px; }   /* Status */
+  .pg-tbl th:nth-child(3) { width: 190px; }  /* Host */
+  .pg-tbl th:nth-child(4) { width: 110px; }  /* Path */
+  .pg-tbl th:nth-child(5) { width: 140px; }  /* Rules Hit */
+  .pg-tbl th:nth-child(6) { width: 65px; }   /* Latency */
+  .pg-tbl th:nth-child(7) { width: 120px; }  /* Tokens in/out */
+  .pg-tbl th:nth-child(8) { width: 85px; }   /* Session */
+  .pg-tbl th:nth-child(9) { width: 160px; }  /* Client */
   /* Column headers: tighter letter-spacing, standard Datadog table header style */
   .pg-tbl th { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
                color: var(--text-3); padding: 8px 16px; border-bottom: 1px solid var(--border);
@@ -794,7 +797,8 @@ var dashboardHTML = `<!DOCTYPE html>
                 <th>Latency</th>
                 <th>Tokens (in/out)</th>
                 <th>Session</th>
-              </tr>
+                <th>Client</th>
+ </tr>
             </thead>
             <tbody id="prompts-body">
               <tr class="empty"><td colspan="8">No prompts intercepted yet</td></tr>
@@ -1031,6 +1035,10 @@ async function refresh() {
           var sessionCell = sid
             ? '<td class="mono muted td-r" title="'+esc(sid)+'">'+esc(sid.slice(0,8))+'</td>'
             : '<td class="mono muted td-r" style="color:var(--text-3)">—</td>';
+          var clientVal = p.client || '';
+          var clientCell = clientVal
+            ? '<td class="mono muted" title="'+esc(clientVal)+'">'+esc(clientVal)+'</td>'
+            : '<td class="mono muted" style="color:var(--text-3)">—</td>';
           return '<tr id="row-'+p.id+'" class="row-'+p.status+'" onclick="toggleDetail('+p.id+')">' +
             '<td class="mono muted">'+esc(p.time)+'</td>' +
             '<td>'+statusTag(p.status)+agentBadge+'</td>' +
@@ -1040,6 +1048,7 @@ async function refresh() {
             '<td class="mono muted td-r">'+dur+'</td>' +
             '<td class="mono muted td-r">'+(p.input_tokens||p.output_tokens ? fmtTokens(p.input_tokens||0)+' / '+fmtTokens(p.output_tokens||0) : '—')+'</td>' +
             sessionCell +
+            clientCell +
             '</tr>';
         }).join('');
 

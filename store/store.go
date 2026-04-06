@@ -34,6 +34,7 @@ type Prompt struct {
 	InputTokens    int
 	OutputTokens   int
 	SessionID      string
+	Client         string
 }
 
 type Store struct {
@@ -69,7 +70,8 @@ func (s *Store) migrate() error {
 			agent_mode       INTEGER NOT NULL DEFAULT 0,
 			input_tokens     INTEGER NOT NULL DEFAULT 0,
 			output_tokens    INTEGER NOT NULL DEFAULT 0,
-			session_id       TEXT    NOT NULL DEFAULT ''
+			session_id       TEXT    NOT NULL DEFAULT '',
+			client           TEXT    NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS settings (
 			key   TEXT PRIMARY KEY,
@@ -88,6 +90,7 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE prompts ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE prompts ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE prompts ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE prompts ADD COLUMN client TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 
@@ -116,8 +119,8 @@ func (s *Store) SavePrompt(p Prompt) (int64, error) {
 		agentModeInt = 1
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO prompts (timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, session_id) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		p.Timestamp.Unix(), p.Host, p.Path, p.Prompt, string(p.Status), string(b), p.RedactedPrompt, p.DurationMS, agentModeInt, p.SessionID,
+		`INSERT INTO prompts (timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, session_id, client) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		p.Timestamp.Unix(), p.Host, p.Path, p.Prompt, string(p.Status), string(b), p.RedactedPrompt, p.DurationMS, agentModeInt, p.SessionID, p.Client,
 	)
 	if err != nil {
 		return 0, err
@@ -151,12 +154,12 @@ func (s *Store) ListPrompts(statusFilter string, limit, offset int) ([]Prompt, e
 	var err error
 	if statusFilter == "" || statusFilter == "all" {
 		rows, err = s.db.Query(
-			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, input_tokens, output_tokens, session_id
+			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, input_tokens, output_tokens, session_id, client
 			 FROM prompts ORDER BY timestamp DESC LIMIT ? OFFSET ?`, limit, offset,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, input_tokens, output_tokens, session_id
+			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, input_tokens, output_tokens, session_id, client
 			 FROM prompts WHERE status = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
 			statusFilter, limit, offset,
 		)
@@ -170,13 +173,13 @@ func (s *Store) ListPrompts(statusFilter string, limit, offset int) ([]Prompt, e
 
 func (s *Store) GetPrompt(id int64) (*Prompt, error) {
 	row := s.db.QueryRow(
-		`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, input_tokens, output_tokens, session_id FROM prompts WHERE id = ?`, id,
+		`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, input_tokens, output_tokens, session_id, client FROM prompts WHERE id = ?`, id,
 	)
 	var p Prompt
 	var ts int64
 	var matchJSON string
 	var agentModeInt int
-	if err := row.Scan(&p.ID, &ts, &p.Host, &p.Path, &p.Prompt, &p.Status, &matchJSON, &p.RedactedPrompt, &p.DurationMS, &agentModeInt, &p.InputTokens, &p.OutputTokens, &p.SessionID); err != nil {
+	if err := row.Scan(&p.ID, &ts, &p.Host, &p.Path, &p.Prompt, &p.Status, &matchJSON, &p.RedactedPrompt, &p.DurationMS, &agentModeInt, &p.InputTokens, &p.OutputTokens, &p.SessionID, &p.Client); err != nil {
 		return nil, err
 	}
 	p.Timestamp = time.Unix(ts, 0)
@@ -192,7 +195,7 @@ func scanPrompts(rows *sql.Rows) ([]Prompt, error) {
 		var ts int64
 		var matchJSON string
 		var agentModeInt int
-		if err := rows.Scan(&p.ID, &ts, &p.Host, &p.Path, &p.Prompt, &p.Status, &matchJSON, &p.RedactedPrompt, &p.DurationMS, &agentModeInt, &p.InputTokens, &p.OutputTokens, &p.SessionID); err != nil {
+		if err := rows.Scan(&p.ID, &ts, &p.Host, &p.Path, &p.Prompt, &p.Status, &matchJSON, &p.RedactedPrompt, &p.DurationMS, &agentModeInt, &p.InputTokens, &p.OutputTokens, &p.SessionID, &p.Client); err != nil {
 			return nil, err
 		}
 		p.Timestamp = time.Unix(ts, 0)
