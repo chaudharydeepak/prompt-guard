@@ -213,7 +213,6 @@ type Stats struct {
 	MostFlaggedHost string `json:"most_flagged_host"`
 	TotalInputTokens  int    `json:"total_input_tokens"`
 	TotalOutputTokens int    `json:"total_output_tokens"`
-	CurrentSessionID  string `json:"current_session_id"`
 }
 
 func (s *Store) Stats() Stats {
@@ -228,7 +227,6 @@ func (s *Store) Stats() Stats {
 		`SELECT host FROM prompts WHERE status!='clean' AND status!='telemetry' GROUP BY host ORDER BY COUNT(*) DESC LIMIT 1`,
 	).Scan(&st.MostFlaggedHost)
 	s.db.QueryRow(`SELECT COALESCE(SUM(output_tokens),0) FROM prompts`).Scan(&st.TotalOutputTokens)
-	st.CurrentSessionID = s.GetSetting("current_session_id", "")
 	return st
 }
 

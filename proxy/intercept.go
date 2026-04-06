@@ -308,20 +308,6 @@ func ExtractUsage(body []byte) (inputTokens, outputTokens int) {
 	return
 }
 
-// ExtractClaudeSessionID parses the Claude Code session ID from an event_logging batch payload.
-func ExtractClaudeSessionID(body []byte) string {
-	var env struct {
-		Events []struct {
-			EventData struct {
-				SessionID string `json:"session_id"`
-			} `json:"event_data"`
-		} `json:"events"`
-	}
-	if err := json.Unmarshal(body, &env); err != nil || len(env.Events) == 0 {
-		return ""
-	}
-	return env.Events[0].EventData.SessionID
-}
 
 // userQueryFromString extracts the user message from a string content field.
 // Uses <user_query> tag when present (Copilot format); otherwise strips XML tags.

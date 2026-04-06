@@ -54,17 +54,16 @@ func isTarget(hostport string) bool {
 }
 
 type proxy struct {
-	ca               *CA
-	db               *store.Store
-	eng              *inspector.Engine
-	upstreamProxy    string // optional: "http://host:port" or "http://user:pass@host:port"
-	currentSessionID string
+	ca            *CA
+	db            *store.Store
+	eng           *inspector.Engine
+	upstreamProxy string // optional: "http://host:port" or "http://user:pass@host:port"
 }
 
 // Start runs the HTTP proxy on the given port. Blocks until error.
 // upstreamProxy is optional — set to route outbound traffic through a corporate proxy.
 func Start(port int, ca *CA, db *store.Store, eng *inspector.Engine, upstreamProxy string) error {
-	p := &proxy{ca: ca, db: db, eng: eng, upstreamProxy: upstreamProxy, currentSessionID: db.GetSetting("current_session_id", "")}
+	p := &proxy{ca: ca, db: db, eng: eng, upstreamProxy: upstreamProxy}
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
 		Handler: p,
@@ -148,14 +147,19 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 		}
 
 		debugf("REQUEST: %s %s%s body=%d bytes stream=%v accept=%s", req.Method, stripPort(hostport), req.URL.Path, len(body), IsStreaming(body), req.Header.Get("Accept"))
-
-		// Extract Claude Code session ID from event_logging requests.
-		if strings.Contains(req.URL.Path, "/event_logging") {
-			if sid := ExtractClaudeSessionID(body); sid != "" {
-				p.currentSessionID = sid
-				p.db.SetSetting("current_session_id", sid)
-				debugf("SESSION: %s", sid)
+		if Debug {
+			for _, h := range []string{"X-Session-Id","X-Request-Id","X-Vscode-Session-Id","X-Github-Session-Id","Vscode-Sessionid","Vscode-Machineid","X-Client-Session","Copilot-Session-Id"} {
+				if v := req.Header.Get(h); v != "" {
+					debugf("  HEADER %s: %s", h, v)
+				}
 			}
+		}
+
+		// Session ID: only reliable for Copilot, which sends it on every request as a header.
+		// For other clients (Claude Code, browser) we have no reliable per-request signal.
+		sessionID := req.Header.Get("Vscode-Sessionid")
+		if sessionID != "" {
+			debugf("SESSION (copilot): %s", sessionID)
 		}
 
 		// Detect and store telemetry/analytics payloads separately.
@@ -202,7 +206,7 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 		// inspect and redact them; we just don't terminate the connection.
 		allowBlock := !isCopilotBackground(body)
 
-		blocked, msg, savedID := p.inspectAndStore(req, hostport, combined, redactedCombined, displayPrompt, redactions, allowBlock)
+		blocked, msg, savedID := p.inspectAndStore(req, hostport, combined, redactedCombined, displayPrompt, redactions, allowBlock, sessionID)
 		if blocked {
 			if strings.Contains(stripPort(hostport), "claude.ai") {
 				writeHTTPError(tlsClient, 400, msg)
@@ -431,7 +435,7 @@ func isCopilotBackground(body []byte) bool {
 // redactions are track-mode matches already applied to the forwarded body.
 // allowBlock: if false, block-mode rules are recorded but the request is not terminated.
 // Returns (blocked, assistantMessage, savedRowID). savedRowID is 0 if nothing was stored.
-func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombined, displayPrompt string, redactions []inspector.Match, allowBlock bool) (bool, string, int64) {
+func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombined, displayPrompt string, redactions []inspector.Match, allowBlock bool, sessionID string) (bool, string, int64) {
 	if combined == "" && len(redactions) == 0 {
 		return false, "", 0
 	}
@@ -468,7 +472,7 @@ func (p *proxy) inspectAndStore(req *http.Request, host, combined, redactedCombi
 		Status:         status,
 		Matches:        allMatches,
 		AgentMode:      p.eng.AgentMode(),
-		SessionID:      p.currentSessionID,
+		SessionID:      sessionID,
 	})
 	if err != nil {
 		log.Printf("store ERROR: %v", err)
