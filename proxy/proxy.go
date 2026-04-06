@@ -148,18 +148,26 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 
 		debugf("REQUEST: %s %s%s body=%d bytes stream=%v accept=%s", req.Method, stripPort(hostport), req.URL.Path, len(body), IsStreaming(body), req.Header.Get("Accept"))
 		if Debug {
-			for _, h := range []string{"X-Request-Id", "Vscode-Sessionid", "Vscode-Machineid", "X-Github-Api-Version"} {
+			for _, h := range []string{"X-Request-Id", "Vscode-Sessionid", "Vscode-Machineid", "X-Github-Api-Version", "X-Client-Session-Id"} {
 				if v := req.Header.Get(h); v != "" {
 					debugf("  HEADER %s: %s", h, v)
 				}
 			}
 		}
 
-		// Session ID: only reliable for Copilot, which sends it on every request as a header.
-		// For other clients (Claude Code, browser) we have no reliable per-request signal.
+		// Session ID: extract per-request from known locations.
+		// Copilot VSCode extension: Vscode-Sessionid header.
+		// Copilot CLI: X-Client-Session-Id header.
+		// Claude Code: metadata.user_id JSON field in the request body.
 		sessionID := req.Header.Get("Vscode-Sessionid")
 		if sessionID != "" {
-			debugf("SESSION (copilot): %s", sessionID)
+			debugf("SESSION (copilot-vscode): %s", sessionID)
+		} else if sid := req.Header.Get("X-Client-Session-Id"); sid != "" {
+			sessionID = sid
+			debugf("SESSION (copilot-cli): %s", sid)
+		} else if sid := ExtractAnthropicSessionID(body); sid != "" {
+			sessionID = sid
+			debugf("SESSION (claude): %s", sid)
 		}
 
 		// Detect and store telemetry/analytics payloads separately.

@@ -309,6 +309,27 @@ func ExtractUsage(body []byte) (inputTokens, outputTokens int) {
 }
 
 
+// ExtractAnthropicSessionID pulls the session_id from the metadata.user_id field
+// that Claude Code embeds in every /v1/messages request body.
+// The user_id field is a JSON-encoded string: {"device_id":"...","session_id":"..."}
+func ExtractAnthropicSessionID(body []byte) string {
+	var env struct {
+		Metadata struct {
+			UserID string `json:"user_id"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil || env.Metadata.UserID == "" {
+		return ""
+	}
+	var inner struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(env.Metadata.UserID), &inner); err != nil {
+		return ""
+	}
+	return inner.SessionID
+}
+
 // userQueryFromString extracts the user message from a string content field.
 // Uses <user_query> tag when present (Copilot format); otherwise strips XML tags.
 func userQueryFromString(s string) string {
