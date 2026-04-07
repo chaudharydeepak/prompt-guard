@@ -138,31 +138,45 @@ func (s *Store) UpdateTokens(id int64, inputTokens, outputTokens int) error {
 	return err
 }
 
-func (s *Store) CountPrompts(statusFilter string) (int, error) {
+func (s *Store) CountPrompts(statusFilter, search string) (int, error) {
 	var n int
 	var err error
-	if statusFilter == "" || statusFilter == "all" {
+	like := "%" + search + "%"
+	switch {
+	case (statusFilter == "" || statusFilter == "all") && search == "":
 		err = s.db.QueryRow(`SELECT COUNT(*) FROM prompts`).Scan(&n)
-	} else {
+	case statusFilter == "" || statusFilter == "all":
+		err = s.db.QueryRow(
+			`SELECT COUNT(*) FROM prompts WHERE prompt LIKE ? OR host LIKE ? OR client LIKE ? OR session_id LIKE ?`,
+			like, like, like, like).Scan(&n)
+	case search == "":
 		err = s.db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE status = ?`, statusFilter).Scan(&n)
+	default:
+		err = s.db.QueryRow(
+			`SELECT COUNT(*) FROM prompts WHERE status = ? AND (prompt LIKE ? OR host LIKE ? OR client LIKE ? OR session_id LIKE ?)`,
+			statusFilter, like, like, like, like).Scan(&n)
 	}
 	return n, err
 }
 
-func (s *Store) ListPrompts(statusFilter string, limit, offset int) ([]Prompt, error) {
-	var rows *sql.Rows
-	var err error
-	if statusFilter == "" || statusFilter == "all" {
-		rows, err = s.db.Query(
-			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, input_tokens, output_tokens, session_id, client
-			 FROM prompts ORDER BY timestamp DESC LIMIT ? OFFSET ?`, limit, offset,
-		)
-	} else {
-		rows, err = s.db.Query(
-			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, input_tokens, output_tokens, session_id, client
-			 FROM prompts WHERE status = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
-			statusFilter, limit, offset,
-		)
+func (s *Store) ListPrompts(statusFilter, search string, limit, offset int) ([]Prompt, error) {
+	const sel = `SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, input_tokens, output_tokens, session_id, client FROM prompts`
+	like := "%" + search + "%"
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	switch {
+	case (statusFilter == "" || statusFilter == "all") && search == "":
+		rows, err = s.db.Query(sel+` ORDER BY timestamp DESC LIMIT ? OFFSET ?`, limit, offset)
+	case statusFilter == "" || statusFilter == "all":
+		rows, err = s.db.Query(sel+` WHERE prompt LIKE ? OR host LIKE ? OR client LIKE ? OR session_id LIKE ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+			like, like, like, like, limit, offset)
+	case search == "":
+		rows, err = s.db.Query(sel+` WHERE status = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`, statusFilter, limit, offset)
+	default:
+		rows, err = s.db.Query(sel+` WHERE status = ? AND (prompt LIKE ? OR host LIKE ? OR client LIKE ? OR session_id LIKE ?) ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+			statusFilter, like, like, like, like, limit, offset)
 	}
 	if err != nil {
 		return nil, err

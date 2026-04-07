@@ -74,6 +74,7 @@ func Start(port int, db *store.Store, eng *inspector.Engine, configPath string) 
 
 func apiPrompts(w http.ResponseWriter, r *http.Request, db *store.Store) {
 	statusFilter := r.URL.Query().Get("status")
+	search := r.URL.Query().Get("search")
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if page < 1 {
 		page = 1
@@ -84,12 +85,12 @@ func apiPrompts(w http.ResponseWriter, r *http.Request, db *store.Store) {
 	}
 	offset := (page - 1) * perPage
 
-	total, err := db.CountPrompts(statusFilter)
+	total, err := db.CountPrompts(statusFilter, search)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	prompts, err := db.ListPrompts(statusFilter, perPage, offset)
+	prompts, err := db.ListPrompts(statusFilter, search, perPage, offset)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -511,9 +512,16 @@ var dashboardHTML = `<!DOCTYPE html>
                  padding: 1px 9px; font-size: 11px; color: var(--text-2); font-weight: 600;
                  font-variant-numeric: tabular-nums; }
 
+  /* ── Search ────────────────────────────────────── */
+  .search-wrap { margin-left: auto; flex-shrink: 1; min-width: 0; }
+  .search-input { background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px;
+                  color: var(--text-1); font-family: inherit; font-size: 12px; padding: 4px 10px;
+                  width: 220px; outline: none; transition: border-color .15s; }
+  .search-input::placeholder { color: var(--text-3); }
+  .search-input:focus { border-color: var(--accent); }
   /* ── Filter tabs ───────────────────────────────── */
   /* Segmented control pattern used by Linear and Vercel — sits on bg-raised, active is surface+shadow */
-  .ftabs { display: flex; gap: 2px; margin-left: auto; background: var(--bg-raised); border: 1px solid var(--border);
+  .ftabs { display: flex; gap: 2px; margin-left: 8px; background: var(--bg-raised); border: 1px solid var(--border);
            border-radius: 7px; padding: 3px; flex-shrink: 0; }
   .ftab { border: none; background: transparent; color: var(--text-3); border-radius: 5px;
           padding: 4px 11px; font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit;
@@ -779,6 +787,9 @@ var dashboardHTML = `<!DOCTYPE html>
         <div class="panel-hd">
           <span class="panel-title">Prompts</span>
           <span class="panel-count" id="prompt-count">0</span>
+          <div class="search-wrap">
+            <input id="search-input" class="search-input" type="search" placeholder="Search prompts, host, client…" oninput="onSearchInput(this.value)">
+          </div>
           <div class="ftabs">
             <button class="ftab active" onclick="setFilter('all',this)">All</button>
             <button class="ftab" onclick="setFilter('blocked',this)">Blocked</button>
@@ -837,8 +848,20 @@ var dashboardHTML = `<!DOCTYPE html>
 
 <script>
 var currentFilter = 'all';
+var currentSearch = '';
 var currentPage   = 1;
 var pageSize      = 25;
+var _searchTimer  = null;
+
+function onSearchInput(val) {
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(function() {
+    currentSearch = val.trim();
+    currentPage   = 1;
+    lastTopId     = null;
+    refresh();
+  }, 300);
+}
 var openRow       = null;
 
 function toggleTheme() {
@@ -967,7 +990,7 @@ var lastTopId = null;
 
 async function refresh() {
   try {
-    var qs = '?page='+currentPage+'&per_page='+pageSize+(currentFilter !== 'all' ? '&status='+currentFilter : '');
+    var qs = '?page='+currentPage+'&per_page='+pageSize+(currentFilter !== 'all' ? '&status='+currentFilter : '')+(currentSearch ? '&search='+encodeURIComponent(currentSearch) : '');
     var [pr, sr] = await Promise.all([fetch('/api/prompts'+qs), fetch('/api/stats')]);
     var data  = await pr.json();
     var stats = await sr.json();
@@ -1002,7 +1025,7 @@ async function refresh() {
     document.getElementById('pg-next').disabled = currentPage >= totalPages;
 
     var newTopId = prompts.length > 0 ? prompts[0].id : null;
-    if (newTopId === lastTopId && currentPage > 1) return; // stable inner page — skip re-render
+    if (newTopId === lastTopId && currentPage > 1 && !currentSearch) return; // stable inner page — skip re-render
     lastTopId = newTopId;
 
     window._promptData = {};
