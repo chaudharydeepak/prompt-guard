@@ -1062,7 +1062,7 @@ async function refresh() {
                 ? (p.duration_ms/1000).toFixed(1)+'s'
                 : p.duration_ms+'ms')
             : '<span style="color:var(--text-3)">—</span>';
-          var agentBadge = p.agent_mode ? '<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#f59e0b;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:4px;padding:1px 5px;">agent</span>' : '';
+          var agentBadge = p.agent_mode ? '<span style="margin-left:4px;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#f59e0b;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:4px;padding:1px 5px;">ag</span>' : '';
           var sid = p.session_id || '';
           var sessionCell = sid
             ? '<td class="mono muted td-r" title="'+esc(sid)+'">'+esc(sid.slice(0,8))+'</td>'
