@@ -252,30 +252,16 @@ func (s *Store) Stats() Stats {
 func (s *Store) ExportPrompts(from, to time.Time) ([]Prompt, error) {
 	var rows *sql.Rows
 	var err error
+	const sel = `SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms, agent_mode, input_tokens, output_tokens, session_id, client FROM prompts`
 	switch {
 	case !from.IsZero() && !to.IsZero():
-		rows, err = s.db.Query(
-			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms
-			 FROM prompts WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC`,
-			from.Unix(), to.Unix(),
-		)
+		rows, err = s.db.Query(sel+` WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC`, from.Unix(), to.Unix())
 	case !from.IsZero():
-		rows, err = s.db.Query(
-			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms
-			 FROM prompts WHERE timestamp >= ? ORDER BY timestamp ASC`,
-			from.Unix(),
-		)
+		rows, err = s.db.Query(sel+` WHERE timestamp >= ? ORDER BY timestamp ASC`, from.Unix())
 	case !to.IsZero():
-		rows, err = s.db.Query(
-			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms
-			 FROM prompts WHERE timestamp <= ? ORDER BY timestamp ASC`,
-			to.Unix(),
-		)
+		rows, err = s.db.Query(sel+` WHERE timestamp <= ? ORDER BY timestamp ASC`, to.Unix())
 	default:
-		rows, err = s.db.Query(
-			`SELECT id, timestamp, host, path, prompt, status, matches, redacted_prompt, duration_ms
-			 FROM prompts ORDER BY timestamp ASC`,
-		)
+		rows, err = s.db.Query(sel + ` ORDER BY timestamp ASC`)
 	}
 	if err != nil {
 		return nil, err

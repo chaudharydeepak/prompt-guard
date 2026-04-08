@@ -314,9 +314,19 @@ Total     : %d prompts (%d blocked, %d redacted)
 	)
 
 	for i, p := range prompts {
-		text := p.Prompt
-		if p.RedactedPrompt != "" {
+		var text string
+		switch {
+		case p.Status == store.StatusBlocked:
+			// Never export raw content of blocked prompts — it contains the sensitive value that triggered the block.
+			rules := make([]string, 0, len(p.Matches))
+			for _, m := range p.Matches {
+				rules = append(rules, m.RuleName)
+			}
+			text = fmt.Sprintf("[blocked — content withheld. Rules matched: %s]", strings.Join(rules, ", "))
+		case p.RedactedPrompt != "":
 			text = p.RedactedPrompt
+		default:
+			text = p.Prompt
 		}
 		fmt.Fprintf(w, "[%d] %s | %s | %s\n%s\n\n",
 			i+1,
