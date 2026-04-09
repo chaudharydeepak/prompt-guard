@@ -39,9 +39,17 @@ func newChrome(t *testing.T) context.Context {
 		chromedp.Flag("disable-background-networking", true),
 		chromedp.Flag("disable-extensions", true),
 	)
-	// Use system Chrome on macOS.
-	if _, err := os.Stat("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"); err == nil {
-		opts = append(opts, chromedp.ExecPath("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
+	// Prefer explicitly known Chrome paths over chromedp auto-discovery,
+	// which can pick up incompatible Chromium builds on CI runners.
+	for _, p := range []string{
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", // macOS
+		"/usr/bin/google-chrome",                                        // Linux (google-chrome-stable)
+		"/usr/bin/google-chrome-stable",                                 // Linux alt
+	} {
+		if _, err := os.Stat(p); err == nil {
+			opts = append(opts, chromedp.ExecPath(p))
+			break
+		}
 	}
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
 	ctx, cancelCtx := chromedp.NewContext(allocCtx)
