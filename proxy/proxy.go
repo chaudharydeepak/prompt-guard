@@ -28,7 +28,8 @@ func debugf(format string, args ...any) {
 	}
 }
 
-// targetSuffixes are hostname suffixes we intercept.
+// targetSuffixes are the hostname suffixes we intercept.
+// All traffic to matching hosts is inspected regardless of path.
 var targetSuffixes = []string{
 	"api.openai.com",
 	"api.anthropic.com",
@@ -38,6 +39,13 @@ var targetSuffixes = []string{
 	".openai.com",
 	".anthropic.com",
 	"claude.ai",
+}
+
+type proxy struct {
+	ca            *CA
+	db            *store.Store
+	eng           *inspector.Engine
+	upstreamProxy string
 }
 
 func isTarget(hostport string) bool {
@@ -51,13 +59,6 @@ func isTarget(hostport string) bool {
 		}
 	}
 	return false
-}
-
-type proxy struct {
-	ca            *CA
-	db            *store.Store
-	eng           *inspector.Engine
-	upstreamProxy string // optional: "http://host:port" or "http://user:pass@host:port"
 }
 
 // Start runs the HTTP proxy on the given port. Blocks until error.
@@ -202,12 +203,26 @@ func (p *proxy) mitm(clientConn net.Conn, hostport string) {
 		displayPrompt := ExtractUserQuery(body)
 		debugf("EXTRACTED: %d prompt(s)", len(prompts))
 		debugf("  query: %.120s", displayPrompt)
-		if Debug && len(prompts) == 0 && len(body) > 0 && len(body) < 4096 && (body[0] == '{' || body[0] == '[') {
-			end := 2000
-			if len(body) < end {
-				end = len(body)
+		if Debug && len(prompts) == 0 && len(body) > 0 && (body[0] == '{' || body[0] == '[') {
+			// Print top-level keys to understand the body shape without dumping 93KB.
+			var top map[string]json.RawMessage
+			if json.Unmarshal(body, &top) == nil {
+				keys := make([]string, 0, len(top))
+				for k, v := range top {
+					snippet := string(v)
+					if len(snippet) > 80 {
+						snippet = snippet[:80] + "..."
+					}
+					keys = append(keys, k+"="+snippet)
+				}
+				debugf("BODY KEYS: %s", strings.Join(keys, " | "))
+			} else {
+				end := 500
+				if len(body) < end {
+					end = len(body)
+				}
+				debugf("BODY SAMPLE (non-JSON): %s", string(body[:end]))
 			}
-			debugf("BODY SAMPLE: %s", string(body[:end]))
 		}
 
 		// Redact track-mode matches from the full inspection text, then

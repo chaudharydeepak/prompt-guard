@@ -103,7 +103,8 @@ func printSetup(certPath string, port, webPort int, upstreamProxy string) {
 
 	switch runtime.GOOS {
 	case "windows":
-		fmt.Printf("Set proxy:\n  $env:HTTP_PROXY=\"http://localhost:%d\"\n  $env:HTTPS_PROXY=\"http://localhost:%d\"\n  $env:NO_PROXY=\"localhost,127.0.0.1\"\n\n", port, port)
+		fmt.Printf("Set proxy (PowerShell):\n  $env:HTTP_PROXY=\"http://localhost:%d\"\n  $env:HTTPS_PROXY=\"http://localhost:%d\"\n  $env:NO_PROXY=\"localhost,127.0.0.1\"\n  $env:NODE_EXTRA_CA_CERTS=\"%s\"\n\n", port, port, certPath)
+		fmt.Printf("Set proxy (Command Prompt):\n  set HTTP_PROXY=http://localhost:%d\n  set HTTPS_PROXY=http://localhost:%d\n  set NO_PROXY=localhost,127.0.0.1\n  set NODE_EXTRA_CA_CERTS=%s\n\n", port, port, certPath)
 	default:
 		fmt.Printf("Set proxy:\n  export HTTP_PROXY=http://localhost:%d\n  export HTTPS_PROXY=http://localhost:%d\n  export NO_PROXY=localhost,127.0.0.1\n\n", port, port)
 	}

@@ -392,6 +392,143 @@ func TestUserQuery_AnthropicMultiBlock_UserQueryInSecondBlock(t *testing.T) {
 	}
 }
 
+// ── OpenAI Responses API /responses ──────────────────────────────────────────
+
+func TestExtract_ResponsesAPI_InputArray(t *testing.T) {
+	body := `{
+		"model": "gpt-5-mini",
+		"instructions": "You are the GitHub Copilot CLI.",
+		"input": [
+			{"role": "user", "content": [
+				{"type": "input_text", "text": "my api key is key-abc123"}
+			]}
+		],
+		"stream": true
+	}`
+	p := ExtractPrompts([]byte(body))
+	if !containsAll(p, "my api key is key-abc123") {
+		t.Errorf("input_text not extracted: %v", p)
+	}
+	// First turn — instructions should be included
+	if !containsAll(p, "You are the GitHub Copilot CLI") {
+		t.Errorf("instructions not extracted on first turn: %v", p)
+	}
+}
+
+func TestExtract_ResponsesAPI_InstructionsExcludedAfterFirstTurn(t *testing.T) {
+	body := `{
+		"model": "gpt-5-mini",
+		"instructions": "You are the GitHub Copilot CLI.",
+		"input": [
+			{"role": "user",      "content": [{"type": "input_text", "text": "turn 1"}]},
+			{"role": "assistant", "content": [{"type": "text",       "text": "response"}]},
+			{"role": "user",      "content": [{"type": "input_text", "text": "turn 2"}]}
+		]
+	}`
+	p := ExtractPrompts([]byte(body))
+	if !containsAll(p, "turn 2") {
+		t.Errorf("current turn not extracted: %v", p)
+	}
+	if containsAll(p, "You are the GitHub Copilot CLI") {
+		t.Errorf("instructions should not be re-extracted after first turn: %v", p)
+	}
+	if containsAll(p, "turn 1") {
+		t.Errorf("history should not be re-inspected: %v", p)
+	}
+}
+
+func TestExtract_ResponsesAPI_StringInput(t *testing.T) {
+	body := `{
+		"model": "gpt-5-mini",
+		"input": "plain string prompt with secret-value-xyz"
+	}`
+	p := ExtractPrompts([]byte(body))
+	if !containsAll(p, "secret-value-xyz") {
+		t.Errorf("string input not extracted: %v", p)
+	}
+}
+
+func TestExtract_ResponsesAPI_SkipsNonTextTypes(t *testing.T) {
+	body := `{
+		"model": "gpt-5-mini",
+		"input": [
+			{"role": "user", "content": [
+				{"type": "input_text",  "text": "user message"},
+				{"type": "input_image", "image_url": "data:image/png;base64,..."},
+				{"type": "input_file",  "file_id": "file-abc123"}
+			]}
+		]
+	}`
+	p := ExtractPrompts([]byte(body))
+	if !containsAll(p, "user message") {
+		t.Errorf("input_text not extracted: %v", p)
+	}
+	if containsAll(p, "data:image") || containsAll(p, "file-abc123") {
+		t.Errorf("non-text types should not be extracted: %v", p)
+	}
+}
+
+func TestUserQuery_ResponsesAPI(t *testing.T) {
+	body := `{
+		"model": "gpt-5-mini",
+		"instructions": "You are helpful.",
+		"input": [
+			{"role": "user", "content": [
+				{"type": "input_text", "text": "<context>some file</context><user_query>actual question</user_query>"}
+			]}
+		]
+	}`
+	q := ExtractUserQuery([]byte(body))
+	if q != "actual question" {
+		t.Errorf("expected 'actual question', got %q", q)
+	}
+}
+
+func TestUserQuery_ResponsesAPI_NoUserQueryTag(t *testing.T) {
+	body := `{
+		"model": "gpt-5-mini",
+		"input": [
+			{"role": "user", "content": [
+				{"type": "input_text", "text": "plain user message"}
+			]}
+		]
+	}`
+	q := ExtractUserQuery([]byte(body))
+	if !strings.Contains(q, "plain user message") {
+		t.Errorf("expected user message, got %q", q)
+	}
+}
+
+// ── ExtractUsage ─────────────────────────────────────────────────────────────
+
+func TestExtractUsage_ResponsesAPI_CompletedEvent(t *testing.T) {
+	// OpenAI Responses API streams a response.completed event with nested usage.
+	sse := `data: {"type":"response.output_text.delta","delta":"hello"}
+data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":150,"output_tokens":42}}}
+`
+	in, out := ExtractUsage([]byte(sse))
+	if in != 150 {
+		t.Errorf("input_tokens: want 150, got %d", in)
+	}
+	if out != 42 {
+		t.Errorf("output_tokens: want 42, got %d", out)
+	}
+}
+
+func TestExtractUsage_OpenAI_ChatCompletions(t *testing.T) {
+	sse := `data: {"choices":[{"delta":{"content":"hi"}}]}
+data: {"usage":{"prompt_tokens":100,"completion_tokens":20}}
+data: [DONE]
+`
+	in, out := ExtractUsage([]byte(sse))
+	if in != 100 {
+		t.Errorf("prompt_tokens: want 100, got %d", in)
+	}
+	if out != 20 {
+		t.Errorf("completion_tokens: want 20, got %d", out)
+	}
+}
+
 // ── IsStreaming ───────────────────────────────────────────────────────────────
 
 func TestIsStreaming(t *testing.T) {
