@@ -33,13 +33,17 @@ func ExtractPrompts(body []byte) []string {
 	}
 
 	var envelope struct {
-		System   json.RawMessage `json:"system"` // Anthropic only — string or block array
+		// Anthropic /v1/messages
+		System   json.RawMessage `json:"system"`
 		Messages []struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
-		Prompt string `json:"prompt"` // OpenAI legacy completion
-		Input  string `json:"input"`  // generic
+		// OpenAI Responses API /responses
+		InputRaw     json.RawMessage `json:"input"`
+		Instructions string          `json:"instructions"`
+		// Legacy
+		Prompt string `json:"prompt"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil
@@ -67,12 +71,50 @@ func ExtractPrompts(body []byte) []string {
 		raw = append(raw, extractContentText(envelope.Messages[i].Content)...)
 	}
 
-	// Legacy/generic top-level fields.
+	// OpenAI Responses API: input is a string or array of message items.
+	if len(envelope.InputRaw) > 0 {
+		var inputStr string
+		if json.Unmarshal(envelope.InputRaw, &inputStr) == nil {
+			if envelope.Instructions != "" {
+				raw = append(raw, envelope.Instructions)
+			}
+			if inputStr != "" {
+				raw = append(raw, inputStr)
+			}
+		} else {
+			var items []struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			if json.Unmarshal(envelope.InputRaw, &items) == nil {
+				lastAsst := -1
+				for i := len(items) - 1; i >= 0; i-- {
+					if items[i].Role == "assistant" {
+						lastAsst = i
+						break
+					}
+				}
+				// Include instructions on first turn only (no prior assistant).
+				if lastAsst == -1 && envelope.Instructions != "" {
+					raw = append(raw, envelope.Instructions)
+				}
+				for i := lastAsst + 1; i < len(items); i++ {
+					for _, c := range items[i].Content {
+						if (c.Type == "input_text" || c.Type == "text") && strings.TrimSpace(c.Text) != "" {
+							raw = append(raw, strings.TrimSpace(c.Text))
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Legacy top-level field.
 	if envelope.Prompt != "" {
 		raw = append(raw, envelope.Prompt)
-	}
-	if envelope.Input != "" {
-		raw = append(raw, envelope.Input)
 	}
 
 	return cleanTexts(raw)
@@ -162,8 +204,8 @@ func ExtractUserQuery(body []byte) string {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
-		Prompt string `json:"prompt"`
-		Input  string `json:"input"`
+		InputRaw json.RawMessage `json:"input"`
+		Prompt   string          `json:"prompt"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return ""
@@ -192,7 +234,39 @@ func ExtractUserQuery(body []byte) string {
 		if envelope.Prompt != "" {
 			return envelope.Prompt
 		}
-		return envelope.Input
+		// OpenAI Responses API input field.
+		if len(envelope.InputRaw) > 0 {
+			var inputStr string
+			if json.Unmarshal(envelope.InputRaw, &inputStr) == nil {
+				return userQueryFromString(inputStr)
+			}
+			var items []struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			if json.Unmarshal(envelope.InputRaw, &items) == nil {
+				lastAsst := -1
+				for i := len(items) - 1; i >= 0; i-- {
+					if items[i].Role == "assistant" {
+						lastAsst = i
+						break
+					}
+				}
+				for i := lastAsst + 1; i < len(items); i++ {
+					if items[i].Role != "user" {
+						continue
+					}
+					for _, c := range items[i].Content {
+						if (c.Type == "input_text" || c.Type == "text") && strings.TrimSpace(c.Text) != "" {
+							parts = append(parts, userQueryFromString(c.Text))
+						}
+					}
+				}
+			}
+		}
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -267,6 +341,10 @@ func ExtractUsage(body []byte) (inputTokens, outputTokens int) {
 		Message *struct {
 			Usage *usageBlock `json:"usage"`
 		} `json:"message"`
+		// OpenAI Responses API: response.completed event
+		Response *struct {
+			Usage *usageBlock `json:"usage"`
+		} `json:"response"`
 	}
 
 	// Scan each line — works for both plain JSON and SSE (data: {...}).
@@ -302,6 +380,16 @@ func ExtractUsage(body []byte) (inputTokens, outputTokens int) {
 			}
 			if u.CompletionTokens > outputTokens {
 				outputTokens = u.CompletionTokens
+			}
+		}
+		// OpenAI Responses API: response.completed event has usage nested under response
+		if s.Response != nil && s.Response.Usage != nil {
+			u := s.Response.Usage
+			if u.InputTokens > inputTokens {
+				inputTokens = u.InputTokens
+			}
+			if u.OutputTokens > outputTokens {
+				outputTokens = u.OutputTokens
 			}
 		}
 	}
