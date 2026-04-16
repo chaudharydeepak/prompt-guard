@@ -1485,44 +1485,67 @@ async function refreshModelStats() {
     stats.forEach(function(s) { lookup[s.model + '\0' + (s.client||'')] = s; });
 
     var fmt = function(ms) { return ms >= 1000 ? (ms/1000).toFixed(1)+'s' : ms+'ms'; };
-    var col  = function(ms) { return ms > 10000 ? 'var(--danger)' : ms > 5000 ? 'var(--warning)' : '#4caf82'; };
-
-    // CSS grid: model name takes remaining space; each client column is fixed 140px.
-    var clientW = 140;
-    var gridCols = '1fr ' + clients.map(function() { return clientW+'px'; }).join(' ');
-
-    var hdrCell = 'padding:3px 10px 5px;font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:var(--text-3);border-bottom:1px solid var(--border);white-space:nowrap';
+    var colr = function(ms) { return ms > 10000 ? 'var(--danger)' : ms > 5000 ? 'var(--warning)' : '#4caf82'; };
+    var hdrCell  = 'padding:3px 10px 5px;font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:var(--text-3);border-bottom:1px solid var(--border);white-space:nowrap';
     var dataCell = 'padding:4px 10px;font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums';
 
-    var html = '<div style="display:grid;grid-template-columns:'+gridCols+';min-width:0">';
+    var html;
 
-    // Header row
-    html += '<div style="'+hdrCell+'">Model</div>';
-    clients.forEach(function(c) {
-      html += '<div style="'+hdrCell+';text-align:right">'+esc(c||'unknown')+'</div>';
-    });
-
-    // Data rows — one per model, alternating background.
-    models.forEach(function(m, i) {
-      var bg = i % 2 === 1 ? 'background:rgba(0,0,0,0.035);' : '';
-      // Model name cell — truncate with ellipsis.
-      html += '<div style="'+dataCell+bg+'color:var(--text-2);overflow:hidden;text-overflow:ellipsis" title="'+esc(m)+'">'+esc(m)+'</div>';
-      clients.forEach(function(c) {
-        var s = lookup[m + '\0' + c];
+    if (clients.length <= 1) {
+      // ── Single-client (or no client tag): flat table — Model | p50 | p95 | n ──
+      html = '<div style="display:grid;grid-template-columns:1fr 72px 72px 40px;min-width:0">';
+      // Header
+      html += '<div style="'+hdrCell+'">Model</div>';
+      html += '<div style="'+hdrCell+';text-align:right">p50</div>';
+      html += '<div style="'+hdrCell+';text-align:right">p95</div>';
+      html += '<div style="'+hdrCell+';text-align:right">n</div>';
+      // Rows
+      models.forEach(function(m, i) {
+        var bg = i % 2 === 1 ? 'background:rgba(0,0,0,0.035);' : '';
+        var s  = lookup[m + '\0' + (clients[0]||'')];
+        html += '<div style="'+dataCell+bg+'color:var(--text-2);overflow:hidden;text-overflow:ellipsis" title="'+esc(m)+'">'+esc(m)+'</div>';
         if (s) {
-          html += '<div style="'+dataCell+bg+'text-align:right">' +
-            '<span style="color:var(--text-1);font-weight:600">'+fmt(s.p50_ms)+'</span>' +
-            '<span style="color:var(--text-3)"> / </span>' +
-            '<span style="color:'+col(s.p95_ms)+';font-weight:600">'+fmt(s.p95_ms)+'</span>' +
-            '<span style="color:var(--text-3);font-size:9px">&thinsp;('+s.sample+')</span>' +
-            '</div>';
+          html += '<div style="'+dataCell+bg+'text-align:right;color:var(--text-1);font-weight:600">'+fmt(s.p50_ms)+'</div>';
+          html += '<div style="'+dataCell+bg+'text-align:right;color:'+colr(s.p95_ms)+';font-weight:600">'+fmt(s.p95_ms)+'</div>';
+          html += '<div style="'+dataCell+bg+'text-align:right;color:var(--text-3)">'+s.sample+'</div>';
         } else {
+          html += '<div style="'+dataCell+bg+'text-align:right;color:var(--text-3)">—</div>';
+          html += '<div style="'+dataCell+bg+'text-align:right;color:var(--text-3)">—</div>';
           html += '<div style="'+dataCell+bg+'text-align:right;color:var(--text-3)">—</div>';
         }
       });
-    });
+      html += '</div>';
+    } else {
+      // ── Multi-client: pivot — Model | ClientA (p50/p95 n) | ClientB … ──
+      var clientW = 140;
+      var gridCols = '1fr ' + clients.map(function() { return clientW+'px'; }).join(' ');
+      html = '<div style="display:grid;grid-template-columns:'+gridCols+';min-width:0">';
+      // Header
+      html += '<div style="'+hdrCell+'">Model</div>';
+      clients.forEach(function(c) {
+        html += '<div style="'+hdrCell+';text-align:right">'+esc(c||'unknown')+'</div>';
+      });
+      // Rows
+      models.forEach(function(m, i) {
+        var bg = i % 2 === 1 ? 'background:rgba(0,0,0,0.035);' : '';
+        html += '<div style="'+dataCell+bg+'color:var(--text-2);overflow:hidden;text-overflow:ellipsis" title="'+esc(m)+'">'+esc(m)+'</div>';
+        clients.forEach(function(c) {
+          var s = lookup[m + '\0' + c];
+          if (s) {
+            html += '<div style="'+dataCell+bg+'text-align:right">' +
+              '<span style="color:var(--text-1);font-weight:600">'+fmt(s.p50_ms)+'</span>' +
+              '<span style="color:var(--text-3)"> / </span>' +
+              '<span style="color:'+colr(s.p95_ms)+';font-weight:600">'+fmt(s.p95_ms)+'</span>' +
+              '<span style="color:var(--text-3);font-size:9px">&thinsp;('+s.sample+')</span>' +
+              '</div>';
+          } else {
+            html += '<div style="'+dataCell+bg+'text-align:right;color:var(--text-3)">—</div>';
+          }
+        });
+      });
+      html += '</div>';
+    }
 
-    html += '</div>';
     body.innerHTML = html;
 
     // Re-fit height if panel open.
