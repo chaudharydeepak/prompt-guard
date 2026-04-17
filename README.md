@@ -2,13 +2,23 @@
   <img src="logo.svg" width="120" alt="Prompt Guard">
 </p>
 
+<p align="center">
+  <a href="#why">Why</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#setup">Setup</a> ·
+  <a href="#client-notes">Client notes</a> ·
+  <a href="#rules">Rules</a> ·
+  <a href="#agent-mode">Agent mode</a> ·
+  <a href="#options">Options</a> ·
+  <a href="#architecture">Architecture</a>
+</p>
+
 # Prompt Guard
 
 A local HTTPS proxy that intercepts every prompt sent to AI coding assistants — blocking or redacting sensitive data before it reaches the model.
 
 ![Prompt Guard demo](demo.gif)
-
-**[Why](#why) · [Features](#features) · [Install](#install) · [Setup](#setup) · [Client notes](#client-notes) · [Rules](#rules) · [Agent mode](#agent-mode) · [Options](#options) · [Architecture](#architecture)**
 
 ---
 
