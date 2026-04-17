@@ -36,18 +36,23 @@ jobs:
           - goos: darwin
             goarch: arm64
             asset: prompt-guard-darwin-arm64
+            tarball: prompt-guard-darwin-arm64.tar.gz
           - goos: darwin
             goarch: amd64
             asset: prompt-guard-darwin-amd64
+            tarball: prompt-guard-darwin-amd64.tar.gz
           - goos: linux
             goarch: arm64
             asset: prompt-guard-linux-arm64
+            tarball: prompt-guard-linux-arm64.tar.gz
           - goos: linux
             goarch: amd64
             asset: prompt-guard-linux-amd64
+            tarball: prompt-guard-linux-amd64.tar.gz
           - goos: windows
             goarch: amd64
             asset: prompt-guard-windows-amd64.exe
+            tarball: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -63,10 +68,28 @@ jobs:
           CGO_ENABLED: 0
         run: go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o ${{ matrix.asset }} .
 
-      - name: Checksum
+      - name: Package (macOS / Linux)
+        if: matrix.tarball != ''
+        run: |
+          cp ${{ matrix.asset }} prompt-guard
+          tar czf ${{ matrix.tarball }} prompt-guard
+          sha256sum ${{ matrix.tarball }} > ${{ matrix.tarball }}.sha256
+          rm prompt-guard
+
+      - name: Checksum (Windows)
+        if: matrix.tarball == ''
         run: sha256sum ${{ matrix.asset }} > ${{ matrix.asset }}.sha256
 
       - uses: actions/upload-artifact@v4
+        if: matrix.tarball != ''
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.tarball }}
+            ${{ matrix.tarball }}.sha256
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.tarball == ''
         with:
           name: ${{ matrix.asset }}
           path: |
@@ -86,6 +109,94 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            prompt-guard-*
+            prompt-guard-*.tar.gz
+            prompt-guard-*.tar.gz.sha256
+            prompt-guard-windows-amd64.exe
+            prompt-guard-windows-amd64.exe.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  homebrew:
+    name: Update Homebrew Tap
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Compute SHA256s
+        id: shas
+        run: |
+          echo "arm64=$(cat prompt-guard-darwin-arm64.tar.gz.sha256 | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "amd64=$(cat prompt-guard-darwin-amd64.tar.gz.sha256 | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_arm64=$(cat prompt-guard-linux-arm64.tar.gz.sha256 | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_amd64=$(cat prompt-guard-linux-amd64.tar.gz.sha256 | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+      - name: Checkout tap
+        uses: actions/checkout@v4
+        with:
+          repository: chaudharydeepak/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        env:
+          VERSION: ${{ github.ref_name }}
+          SHA_DARWIN_ARM64: ${{ steps.shas.outputs.arm64 }}
+          SHA_DARWIN_AMD64: ${{ steps.shas.outputs.amd64 }}
+          SHA_LINUX_ARM64: ${{ steps.shas.outputs.linux_arm64 }}
+          SHA_LINUX_AMD64: ${{ steps.shas.outputs.linux_amd64 }}
+        run: |
+          cat > homebrew-tap/Formula/prompt-guard.rb << EOF
+          class PromptGuard < Formula
+            desc "Local HTTPS MITM proxy that inspects, redacts, or blocks sensitive data sent to AI coding assistants"
+            homepage "https://github.com/chaudharydeepak/prompt-guard"
+            version "${VERSION#v}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/chaudharydeepak/prompt-guard/releases/download/${VERSION}/prompt-guard-darwin-arm64.tar.gz"
+                sha256 "${SHA_DARWIN_ARM64}"
+              else
+                url "https://github.com/chaudharydeepak/prompt-guard/releases/download/${VERSION}/prompt-guard-darwin-amd64.tar.gz"
+                sha256 "${SHA_DARWIN_AMD64}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/chaudharydeepak/prompt-guard/releases/download/${VERSION}/prompt-guard-linux-arm64.tar.gz"
+                sha256 "${SHA_LINUX_ARM64}"
+              else
+                url "https://github.com/chaudharydeepak/prompt-guard/releases/download/${VERSION}/prompt-guard-linux-amd64.tar.gz"
+                sha256 "${SHA_LINUX_AMD64}"
+              end
+            end
+
+            def install
+              bin.install "prompt-guard"
+            end
+
+            service do
+              run [opt_bin/"prompt-guard"]
+              keep_alive true
+              log_path var/"log/prompt-guard.log"
+              error_log_path var/"log/prompt-guard.log"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/prompt-guard --version 2>&1", 1)
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/prompt-guard.rb
+          git commit -m "prompt-guard ${{ github.ref_name }}"
+          git push

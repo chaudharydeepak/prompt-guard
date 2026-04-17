@@ -19,12 +19,18 @@ import (
 var version = "dev"
 
 func main() {
+	showVersion   := flag.Bool("version", false, "Print version and exit")
 	port          := flag.Int("port", 8080, "Proxy port")
 	webPort       := flag.Int("web-port", 7778, "Web dashboard port")
 	caDir         := flag.String("ca-dir", defaultCADir(), "Directory for CA cert/key and database")
 	upstreamProxy := flag.String("upstream-proxy", "", "Corporate proxy to route outbound traffic through (e.g. http://proxy.corp.com:8080)")
 	debug         := flag.Bool("debug", false, "Enable verbose request/connection logging")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	proxy.Debug = *debug
 
