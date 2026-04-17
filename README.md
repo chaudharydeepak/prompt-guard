@@ -8,6 +8,10 @@ A local HTTPS proxy that intercepts every prompt sent to AI coding assistants �
 
 ![Prompt Guard demo](demo.gif)
 
+**[Why](#why) · [Features](#features) · [Install](#install) · [Setup](#setup) · [Client notes](#client-notes) · [Rules](#rules) · [Agent mode](#agent-mode) · [Options](#options) · [Architecture](#architecture)**
+
+---
+
 ## Why
 
 AI tools like Claude Code, GitHub Copilot, and ChatGPT receive your full editor context on every request. That context routinely contains API keys, passwords, database credentials, SSNs, and internal IP addresses — sent to third-party servers without you noticing.
