@@ -94,63 +94,104 @@ go build ./...
 - Go 1.21+
 - macOS, Linux, or Windows
 
-## Quickstart
+## Install
+
+### Homebrew (macOS / Linux) — recommended
+
+```bash
+brew tap chaudharydeepak/tap
+brew install prompt-guard
+```
+
+### Build from source
 
 ```bash
 git clone https://github.com/chaudharydeepak/prompt-guard
 cd prompt-guard
 go build -o prompt-guard .
+```
+
+## Quickstart
+
+### 1. Start the proxy
+
+**Homebrew — run once in foreground:**
+```bash
+prompt-guard
+```
+
+**Homebrew — run as background service (auto-starts on login):**
+```bash
+brew services start chaudharydeepak/tap/prompt-guard
+```
+
+**From source:**
+```bash
 ./prompt-guard
 ```
 
-On first run a local CA cert is generated and setup instructions are printed:
+On first run a local CA cert is generated and the proxy binds to `:8080`. The dashboard is at `http://localhost:7778`.
 
-```
-┌─────────────────────────────────────────┐
-│           Prompt Guard starting         │
-└─────────────────────────────────────────┘
+### 2. Point your shell at the proxy
 
-CA cert:   /Users/you/.prompt-guard/ca.crt
+Add these lines to your `~/.zshrc` (or `~/.bashrc`) so every terminal session routes through Prompt Guard:
 
-Install CA (optional — only needed for browser inspection):
-  sudo security add-trusted-cert -d -r trustRoot \
-    -k /Library/Keychains/System.keychain ~/.prompt-guard/ca.crt
-
-Set proxy:
-  export HTTP_PROXY=http://localhost:8080
-  export HTTPS_PROXY=http://localhost:8080
-  export NO_PROXY=localhost,127.0.0.1
-
-Dashboard:  http://localhost:7778
-Rules file: /Users/you/.prompt-guard/rules.json
+```bash
+export HTTP_PROXY=http://localhost:8080
+export HTTPS_PROXY=http://localhost:8080
+export NO_PROXY=localhost,127.0.0.1
 ```
 
-The CA cert is **not required** for most CLI tools. Only install it if you want to route traffic from a browser or tool that does its own TLS certificate verification.
+Then reload:
 
-### Using with Claude CLI / Claude Code
+```bash
+source ~/.zshrc
+```
+
+> **No CA cert required for CLI tools.** Claude Code, Copilot CLI, and most terminal tools work with just the proxy env vars above. Only install the CA cert if you want browser traffic inspected too.
+
+### 3. Open the dashboard
+
+```
+http://localhost:7778
+```
+
+Live feed of all intercepted prompts — status, matched rules, latency, token usage, and the full prompt text.
+
+---
+
+### Optional: CA cert (browser inspection only)
+
+Skip this if you only use CLI tools. Required for Chrome / Safari HTTPS inspection.
+
+The cert is auto-generated at `~/.prompt-guard/ca.crt` on first run.
+
+**macOS:**
+```bash
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain ~/.prompt-guard/ca.crt
+```
+
+**Linux:**
+```bash
+sudo cp ~/.prompt-guard/ca.crt /usr/local/share/ca-certificates/prompt-guard.crt
+sudo update-ca-certificates
+```
+
+---
+
+### Claude Code / Claude CLI
+
+Claude Code (v2.1.84+) verifies TLS certificates via Node.js. Set one extra variable alongside the proxy:
 
 ```bash
 export HTTP_PROXY=http://localhost:8080
 export HTTPS_PROXY=http://localhost:8080
 export NO_PROXY=localhost,127.0.0.1
 export NODE_EXTRA_CA_CERTS=~/.prompt-guard/ca.crt
-claude
 ```
 
-`NODE_EXTRA_CA_CERTS` is required for Claude Code v2.1.84+ — newer versions verify TLS certificates and will reject the MITM cert without it. This variable scopes the trust to Node.js processes only (no system keychain changes needed).
-
-Add all four lines to your `~/.zshrc` (or `~/.bashrc`) to persist across sessions.
-
-### Using with VS Code Copilot
-
-Set the proxy directly in VS Code settings (`Cmd+,`):
-
-```json
-"http.proxy": "http://localhost:8080",
-"http.proxyStrictSSL": false
-```
-
-Then restart VS Code. Traffic from all Copilot models will flow through the proxy.
+Add all four to `~/.zshrc` to persist across sessions. `NODE_EXTRA_CA_CERTS` scopes the cert trust to Node.js only — no system keychain changes needed.
 
 
 ## Agent Mode
