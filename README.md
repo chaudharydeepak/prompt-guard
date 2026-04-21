@@ -1,3 +1,7 @@
+> **This project has been renamed to [Redasq](https://github.com/chaudharydeepak/redasq).** All new development, issues, and releases are maintained there. This repo is archived for reference.
+
+---
+
 <p align="center">
   <img src="logo.svg" width="120" alt="Prompt Guard">
 </p>
