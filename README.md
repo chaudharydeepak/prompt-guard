@@ -1,3 +1,4 @@
+> [!WARNING]
 > **This project has been renamed to [Redasq](https://github.com/chaudharydeepak/redasq).** All new development, issues, and releases are maintained there. This repo is archived for reference.
 
 ---
